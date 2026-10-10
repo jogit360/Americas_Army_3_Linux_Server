@@ -116,6 +116,28 @@ bool Engine::Initialize(const std::string& config_path) {
                 LOG_INFO("Loaded map manifest '%s' (%zu USES entries)",
                          manifest_path.c_str(), m->uses.size());
                 map_manifest_ = std::move(*m);
+                // Retail's USES also carry the gametype level's own content
+                // (BASEPKG=<level>: S_Music, ES2_Objects on Bridge classic) --
+                // without them the victory stingers and the ES2 objects'
+                // meshes have no ObjectIndex (doc sec 36). Appended, so every
+                // other package keeps its ObjectBase.
+                const std::string level = game::World::ResolveGameModeLevel(
+                    *map_manifest_, GetConfigValue("GameModeLevel", ""));
+                std::ifstream lf("config/maps/" + level + ".aa3.manifest.json");
+                if (!level.empty() && lf) {
+                    std::string ljson((std::istreambuf_iterator<char>(lf)),
+                                      std::istreambuf_iterator<char>());
+                    if (auto lm = MapManifest::FromJson(ljson, &mferr)) {
+                        size_t added = 0;
+                        for (const auto& u : lm->uses) {
+                            if (u.basepkg != level) continue;
+                            bool have = false;
+                            for (const auto& e : map_manifest_->uses) have = have || e.pkg == u.pkg;
+                            if (!have) { map_manifest_->uses.push_back(u); ++added; }
+                        }
+                        LOG_INFO("USES: +%zu package(s) of gametype level %s", added, level.c_str());
+                    }
+                }
                 // GameModeLevel: the gametype sublevel the client streams in
                 // (doc sec 27). Empty = retail's "<Base>_inf_classic_large_dev".
                 if (!world_.BindPackageMap(*map_manifest_,
@@ -127,6 +149,7 @@ bool Engine::Initialize(const std::string& config_path) {
         // Seconds before a killed player respawns (doc sec 33); 0 = not this round.
         world_.SetRespawnDelay(std::atof(GetConfigValue("RespawnDelay", "0").c_str()));
         world_.SetIncapBleeding(GetConfigValue("IncapBleeding", "true") != "false");
+        world_.SetTimeLimit(GetConfigInt("MissionTimeLimit", 0));
                 for (int t = 0; t < 2; ++t) {
                     std::string sp = GetConfigValue("SpawnPoint" + std::to_string(t), "");
                     float x, y, z; int yaw;

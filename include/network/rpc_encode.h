@@ -194,6 +194,19 @@ void BuildClientAdvancedInventoryInitializeAmmoMagazineCountRPC(util::BitWriter&
                                                                 uint8_t inventory_type,
                                                                 int32_t magazine_count);
 
+// Round end / death / reset (doc sec 36).
+void WriteRPCStaticObjectParam(util::BitWriter& w, uint32_t object_index);
+// A PlayerController call without parameters (ClientPawnDied, ClientUnpossess,
+// TS3ClientChangeChannel, ClientUpdateSpectatorViewType, ClientReset...).
+void BuildPCCallRPC(util::BitWriter& w, uint32_t rep_index);
+void BuildClientPlaySoundRPC(util::BitWriter& w, uint32_t sound_object_index);
+void BuildClientSetViewTargetObjectRPC(util::BitWriter& w, uint32_t object_index);
+void BuildClientSetSpectatorModeRPC(util::BitWriter& w, const std::string& mode);
+void BuildHideScoreboardRPC(util::BitWriter& w, bool hide_steam_scoreboard);
+void BuildClientUpdateScoreboardRPC(util::BitWriter& w, bool visibility_override);
+void BuildClientGameEndedRPC(util::BitWriter& w, bool is_winner);
+void BuildClientDisplayScoreboardRPC(util::BitWriter& w, int32_t aar_seconds, int32_t round);
+
 } // namespace network
 } // namespace aa3
 

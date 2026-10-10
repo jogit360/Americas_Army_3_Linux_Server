@@ -1,0 +1,38 @@
+{
+  "level": "Bridge_inf_classic_large_dev",
+  "map": "Bridge_night_clear",
+  "extraction": [
+    {
+      "extracting_team": 0,
+      "min_players": 1,
+      "min_percentage": 1,
+      "objective": "EPOC_Zulu",
+      "boxes": [
+        {
+          "min": [
+            -7008.0,
+            2864.0,
+            -32.0
+          ],
+          "max": [
+            -6208.0,
+            3216.0,
+            224.0
+          ]
+        }
+      ]
+    }
+  ],
+  "viewpoints": [
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94
+  ]
+}

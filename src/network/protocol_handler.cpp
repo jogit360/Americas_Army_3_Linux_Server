@@ -6,6 +6,7 @@
 #include "game/world.h"
 #include "util/logging.h"
 #include "util/bits.h"
+#include <algorithm>
 #include <array>
 #include <vector>
 #include <sstream>
@@ -1457,6 +1458,7 @@ void ProtocolHandler::OpenMatchActors(uint32_t client_id, ClientSession& sess) {
     // t=22.15; doc sec 31).
     if (!world_ || sess.match_opened) return;
     sess.match_opened = true;
+    sess.match_actor_serial_seen = world_->MatchActorSerial();
     for (const auto& a : world_->MatchActors()) OpenDataActor(client_id, sess, a.get());
 }
 
@@ -1493,13 +1495,24 @@ uint32_t ProtocolHandler::OpenDataActor(uint32_t client_id, ClientSession& sess,
 
 void ProtocolHandler::SendPhaseRPCs(uint32_t client_id, game::World::MatchPhase phase) {
     // Retail's per-phase PC-channel calls (GamePlayPCAP_Legit_Server frames
-    // 151/162, 226, 350; doc sec 28).
+    // 151/162, 226, 350; doc sec 28). After a round (doc sec 36) the next
+    // round's phases use retail's round-2 variants (live capture t=244-256).
     using P = game::World::MatchPhase;
     auto sit = sessions_.find(client_id);
-    if (sit != sessions_.end() && phase != P::kPendingMatch) OpenRoundActors(client_id, sit->second);
+    if (sit == sessions_.end()) return;
+    ClientSession& sess = sit->second;
+    if (phase != P::kPendingMatch) OpenRoundActors(client_id, sess);
+    const game::ServerGameReplicationInfo* gri = world_ ? world_->GetGRI() : nullptr;
+    const bool later_round = gri && gri->i_current_round > 1;
+    const game::ServerPlayerController* pc = world_ ? world_->FindPlayerController(client_id) : nullptr;
     util::BitWriter d;
     switch (phase) {
     case P::kRoleSelection: {
+        if (later_round) {
+            BuildPCCallRPC(d, rep::PC::TS3ClientChangeChannel);
+            BuildClientEnterPrePlanningToolRPC(d, true, false, false);
+            break;
+        }
         BuildClientEnterPrePlanningToolRPC(d, false, false, false);
         SendActorUpdateBunch(client_id, kPCChannel, d);
         // Retail sends ClientGotoState in a bunch of its own (frame 162).
@@ -1508,15 +1521,74 @@ void ProtocolHandler::SendPhaseRPCs(uint32_t client_id, game::World::MatchPhase 
         break;
     }
     case P::kDeploymentWarning:
-        BuildClientDeploymentWarningRPC(d, world_ && world_->GetGRI()
-                                               ? world_->GetGRI()->deployment_time : 10);
-        BuildClientUpdatePlayerRallyPointToReachRPC(d);
+        if (later_round && sess.channel_max_index.count(3)) {
+            // AA_SteamStatManager.ClientTransmitLastRoundStats() (t=245.33).
+            util::BitWriter st;
+            st.WriteIntMax(rep::SteamStatManager::ClientTransmitLastRoundStats,
+                           rep::SteamStatManager::kMaxIndex);
+            SendActorUpdateBunch(client_id, 3, st);
+        }
+        BuildClientDeploymentWarningRPC(d, gri ? gri->deployment_time : 10);
+        if (!later_round) BuildClientUpdatePlayerRallyPointToReachRPC(d);
         break;
     case P::kInProgress:
-        if (sit != sessions_.end()) OpenMatchActors(client_id, sit->second);
+        // A reset ES2 set: retail closes the old objects and opens the new
+        // ones at match start (t=255.34).
+        if (sess.match_opened && sess.match_actor_serial_seen != world_->MatchActorSerial()) {
+            for (const auto& a : world_->MatchActors()) CloseDataActor(client_id, sess, a.get());
+            sess.match_opened = false;
+        }
         BuildClientClosePrePlanningToolRPC(d, false);
-        BuildClientSteamStatUpdateMissionStartRPC(d, true);
+        BuildClientSteamStatUpdateMissionStartRPC(d, !later_round);
+        SendActorUpdateBunch(client_id, kPCChannel, d);
+        sess.match_actor_serial_seen = world_->MatchActorSerial();
+        OpenMatchActors(client_id, sess);
+        LOG_INFO("Client %u: sent round-phase RPCs (phase %d)", client_id, static_cast<int>(phase));
+        return;
+    case P::kRoundOver: {
+        // GameHasEnded (retail t=227.34, 81.87, 367.91): the stinger --
+        // victory for the winners, defeat otherwise -- and for a player
+        // still in the fight the unpossess into FreeCam spectating; then
+        // ClientGameEnded (bIsWinner is False in every retail sample) and
+        // ClientGotoState('Spectating').
+        const int32_t team = pc ? game::World::TeamOf(*pc) : -1;
+        const bool won = team >= 0 && team == world_->RoundWinner();
+        BuildClientPlaySoundRPC(d, world_->StingerIndex(won));
+        if (world_->NextRoundSwaps()) BuildTeamMessageRPC(d, 0, "Teams will swap sides the next round.");
+        if (sess.possessed_pawn && !sess.possessed_pawn->torn_off) {
+            BuildClientSetViewTargetRPC(d, kPCChannel);
+            BuildPCCallRPC(d, rep::PC::ClientUnpossess);
+            BuildPCCallRPC(d, rep::PC::TS3ClientChangeChannel);
+            BuildClientSetCameraModeRPC(d, "FreeCam");
+            BuildClientSetSpectatorModeRPC(d, "FreeCam");
+            BuildHideScoreboardRPC(d, true);
+            BuildPCCallRPC(d, rep::PC::ClientUpdateSpectatorViewType);
+        }
+        BuildClientGameEndedRPC(d, false);
+        SendActorUpdateBunch(client_id, kPCChannel, d);
+        d = util::BitWriter();
+        BuildClientUpdateScoreboardRPC(d, false);
+        BuildClientGotoStateRPC(d, "Spectating");
         break;
+    }
+    case P::kShowScoreboard: {
+        // ResetLevel (retail t=229.31): ClientReset, first-person view from
+        // one of the map's AA_Viewpoints, every soldier and its inventory
+        // gone, then the after-action report (ClientDisplayScoreboard).
+        const uint32_t view = world_->RandomViewpointIndex();
+        BuildPCCallRPC(d, rep::PC::ClientReset);
+        BuildClientSetCameraModeRPC(d, "FirstPerson");
+        BuildClientSetSpectatorModeRPC(d, "FirstPerson");
+        if (view) BuildClientSetViewTargetObjectRPC(d, view);
+        SendActorUpdateBunch(client_id, kPCChannel, d);
+        RetireOwnPawn(client_id, sess);
+        d = util::BitWriter();
+        BuildClientDisplayScoreboardRPC(d, 10, world_->FinishedRound());
+        SendActorUpdateBunch(client_id, kPCChannel, d);
+        d = util::BitWriter();
+        BuildClientGotoStateRPC(d, "WaitingForMatchStart");
+        break;
+    }
     default:
         return;
     }
@@ -2025,6 +2097,30 @@ void ProtocolHandler::Tick(uint64_t now_us) {
             }
         }
 
+        // Between rounds retail repeats ClientGotoState('WaitingForMatchStart')
+        // every 2s, from the scoreboard until the next match start (live
+        // capture t=229.44-253.44; doc sec 36).
+        if (world_ && s.state == ConnectionState::ESTABLISHED && s.actor_burst_sent &&
+            s.phase_serial_seen == world_->PhaseSerial()) {
+            using P = game::World::MatchPhase;
+            const P ph = world_->Phase();
+            const game::ServerGameReplicationInfo* gri = world_->GetGRI();
+            const game::ServerPlayerController* pc = world_->FindPlayerController(kv.first);
+            const bool waiting = pc && pc->pri && pc->pri->OnPlayableTeam() &&
+                (ph == P::kShowScoreboard ||
+                 ((ph == P::kRoleSelection || ph == P::kDeploymentWarning) && gri && gri->i_current_round > 1));
+            if (!waiting) {
+                s.next_wait_state_us = 0;
+            } else if (s.next_wait_state_us == 0) {
+                s.next_wait_state_us = now_us + 2'000'000;
+            } else if (now_us >= s.next_wait_state_us) {
+                util::BitWriter d;
+                BuildClientGotoStateRPC(d, "WaitingForMatchStart");
+                SendActorUpdateBunch(kv.first, kPCChannel, d);
+                s.next_wait_state_us += 2'000'000;
+            }
+        }
+
         // Other players' movement (doc sec 21): unreliable, self-paced at
         // 20Hz inside SyncRemotePlayers, so it runs every main-loop tick.
         if (world_ && s.state == ConnectionState::ESTABLISHED && s.has_last_sent_state)
@@ -2094,7 +2190,10 @@ void ProtocolHandler::Tick(uint64_t now_us) {
                             sent_update = true;
                         }
                     }
-                    if (s.possessed_pawn && (s.possessed_pawn == pc->pawn || s.possessed_pawn->torn_off)) {
+                    // The pawn stays this connection's until it dies, or the
+                    // level reset removes it (an unpossessed body at round end
+                    // keeps its channel until then; doc sec 36).
+                    if (s.possessed_pawn && !s.possessed_pawn->destroyed) {
                         const game::ServerPawn& own = *s.possessed_pawn;
                         util::BitWriter d;
                         if (ChannelReady(s, kOwnPawnChannel) && EncodePawnRep(d, own, &s.last_sent_pawn,
@@ -2104,10 +2203,11 @@ void ProtocolHandler::Tick(uint64_t now_us) {
                             sent_update = true;
                         }
                         if (own.torn_off) {             // death sent: retire the channel (doc sec 33)
-                            CloseActorChannel(kv.first, kOwnPawnChannel);
-                            s.channel_max_index.erase(kOwnPawnChannel);
-                            s.possessed_pawn = nullptr;
+                            SendDeathRPCs(kv.first, s);
+                            RetireOwnPawn(kv.first, s);
                         }
+                    } else if (s.possessed_pawn) {
+                        RetireOwnPawn(kv.first, s);
                     }
                     if (pc->stat_manager) {
                         util::BitWriter st;
@@ -2204,6 +2304,53 @@ RepContext ProtocolHandler::MakeRepContext(ClientSession& sess, uint32_t ch,
     return ctx;
 }
 
+// A data actor's channel (inventory item, ES2 object) closed and forgotten,
+// so the actor can be opened afresh later.
+void ProtocolHandler::CloseDataActor(uint32_t client_id, ClientSession& sess,
+                                     const game::ServerRoundActor* a) {
+    auto it = sess.actor_channel.find(a);
+    if (it != sess.actor_channel.end()) CloseActorChannel(client_id, it->second);
+    sess.data_actors.erase(std::remove(sess.data_actors.begin(), sess.data_actors.end(), a),
+                           sess.data_actors.end());
+    sess.round_sent.erase(a);
+    sess.rof_sent.erase(a);
+}
+
+// The owner's soldier is gone (death, level reset): its inventory channels
+// close -- retail t=81.83 closes the slots, grenades, pouches, IFAK and
+// InventoryManager with the death -- then the pawn's own channel.
+void ProtocolHandler::RetireOwnPawn(uint32_t client_id, ClientSession& sess) {
+    const game::ServerPawn* pawn = sess.possessed_pawn;
+    if (!pawn) return;
+    if (const auto* inventory = world_ ? world_->PawnInventory(pawn) : nullptr)
+        for (const auto& it : *inventory) CloseDataActor(client_id, sess, it.get());
+    if (sess.channel_max_index.count(kOwnPawnChannel)) CloseActorChannel(client_id, kOwnPawnChannel);
+    sess.channel_max_index.erase(kOwnPawnChannel);
+    sess.actor_channel.erase(pawn);
+    sess.possessed_pawn = nullptr;
+    sess.current_weapon_ch = 0;
+}
+
+// The owner's death notices, retail t=81.83 (GamePlayPCAP_Legit_Server):
+// ClientPawnDied, the camera to FreeCam spectating, the scoreboard hidden,
+// then ClientGotoState('Spectating') (doc sec 36).
+void ProtocolHandler::SendDeathRPCs(uint32_t client_id, ClientSession& sess) {
+    (void)sess;
+    util::BitWriter d;
+    BuildPCCallRPC(d, rep::PC::ClientPawnDied);
+    BuildClientSetCameraModeRPC(d, "FirstPerson");
+    BuildPCCallRPC(d, rep::PC::TS3ClientChangeChannel);
+    BuildClientSetCameraModeRPC(d, "FreeCam");
+    BuildClientSetSpectatorModeRPC(d, "FreeCam");
+    BuildHideScoreboardRPC(d, true);
+    BuildPCCallRPC(d, rep::PC::ClientUpdateSpectatorViewType);
+    SendActorUpdateBunch(client_id, kPCChannel, d);
+    util::BitWriter g;
+    BuildClientUpdateScoreboardRPC(g, false);
+    BuildClientGotoStateRPC(g, "Spectating");
+    SendActorUpdateBunch(client_id, kPCChannel, g);
+}
+
 void ProtocolHandler::CloseActorChannel(uint32_t client_id, uint32_t ch_index) {
     auto it = sessions_.find(client_id);
     if (it == sessions_.end()) return;
@@ -2233,24 +2380,33 @@ void ProtocolHandler::SyncRemotePlayers(uint32_t client_id, ClientSession& sess,
     constexpr uint64_t kKeyframeIntervalUs = 1'000'000;
 
     if (reliable_tick) {
-        // 1) Close channels for players who left, or whose PRI/Pawn changed
-        // identity (a respawn would hand out a new Pawn).
+        // 1) Pawns that are gone: a death's tear-off goes out before the
+        // channel closes, so the body stays as a ragdoll (doc sec 33); a
+        // level reset just closes it (doc sec 36). Players who left lose
+        // their PRI channel too. The PRI stays while a player is between
+        // soldiers -- retail keeps it for the scoreboard.
         for (auto it = sess.remote_players.begin(); it != sess.remote_players.end();) {
+            RemotePlayerChannels& rp = it->second;
             const game::ServerPlayerController* opc = world_->FindPlayerController(it->first);
-            if (it->second.pawn && it->second.pawn->torn_off && ChannelReady(sess, it->second.pawn_ch)) {
-                // A death: the tear-off goes out before the channel closes,
-                // so the body stays as a ragdoll (doc sec 33).
+            if (rp.pawn && rp.pawn->torn_off && !rp.pawn->destroyed && ChannelReady(sess, rp.pawn_ch)) {
                 util::BitWriter d;
-                if (EncodePawnRep(d, *it->second.pawn, &it->second.last_pawn_rest,
-                                  MakeRepContext(sess, it->second.pawn_ch, /*for_owner=*/false)) > 0)
-                    SendActorUpdateBunch(client_id, it->second.pawn_ch, d);
-                it->second.last_pawn_rest = *it->second.pawn;
+                if (EncodePawnRep(d, *rp.pawn, &rp.last_pawn_rest,
+                                  MakeRepContext(sess, rp.pawn_ch, /*for_owner=*/false)) > 0)
+                    SendActorUpdateBunch(client_id, rp.pawn_ch, d);
+                rp.last_pawn_rest = *rp.pawn;
             }
-            if (!opc || opc->pawn != it->second.pawn || opc->pri != it->second.pri) {
-                LOG_INFO("Client %u: closing remote player %u's channels (pri ch=%u, pawn ch=%u)",
-                         client_id, it->first, it->second.pri_ch, it->second.pawn_ch);
-                CloseActorChannel(client_id, it->second.pawn_ch);
-                CloseActorChannel(client_id, it->second.pri_ch);
+            const bool left = !opc || opc->pri != rp.pri;
+            const bool pawn_gone = rp.pawn && (rp.pawn->torn_off || rp.pawn->destroyed || left ||
+                                               (opc->pawn && opc->pawn != rp.pawn));
+            if (pawn_gone) {
+                LOG_INFO("Client %u: closing remote player %u's pawn (ch=%u)", client_id, it->first, rp.pawn_ch);
+                CloseActorChannel(client_id, rp.pawn_ch);
+                rp.pawn = nullptr;
+                rp.pawn_ch = 0;
+            }
+            if (left) {
+                LOG_INFO("Client %u: closing remote player %u's PRI (ch=%u)", client_id, it->first, rp.pri_ch);
+                CloseActorChannel(client_id, rp.pri_ch);
                 it = sess.remote_players.erase(it);
             } else {
                 ++it;
@@ -2258,46 +2414,51 @@ void ProtocolHandler::SyncRemotePlayers(uint32_t client_id, ClientSession& sess,
         }
 
         // 2) Open channels for players this connection hasn't seen yet. Only
-        // once they've finished their own initial burst (so their PC/PRI/
-        // Pawn exist). PRI first: the Pawn's PlayerReplicationInfo ref then
+        // once they've finished their own initial burst (so their PC/PRI
+        // exist). PRI first: the Pawn's PlayerReplicationInfo ref then
         // resolves on its very first send.
         for (auto& other : sessions_) {
             if (other.first == client_id || sess.remote_players.count(other.first)) continue;
             if (!other.second.actor_burst_sent) continue;
             const game::ServerPlayerController* opc = world_->FindPlayerController(other.first);
-            if (!opc || !opc->pri || !opc->pawn) continue;
-            if (sess.next_free_channel + 2 > 0x800) {
+            if (!opc || !opc->pri) continue;
+            if (sess.next_free_channel + 1 > 0x800) {
                 LOG_WARN("Client %u: out of actor channels for remote players", client_id);
                 break;
             }
             RemotePlayerChannels rp;
             rp.pri = opc->pri;
-            rp.pawn = opc->pawn;
             rp.pri_ch = sess.next_free_channel++;
-            rp.pawn_ch = sess.next_free_channel++;
-
             util::BitWriter pri_payload;
             RepContext rp_pri_ctx = MakeRepContext(sess, rp.pri_ch, /*for_owner=*/false);
             EncodePRIRep(pri_payload, *rp.pri, nullptr, &rp_pri_ctx);
             OpenActorChannel(client_id, rp.pri_ch, rp.pri->object_index, &pri_payload, rp.pri);
             sess.channel_max_index[rp.pri_ch] = kPRIMaxIndex;
             sess.actor_channel[rp.pri] = rp.pri_ch;
+            rp.last_pri = *rp.pri;
+            LOG_INFO("Client %u: opened remote player %u (PRI ch=%u)", client_id, other.first, rp.pri_ch);
+            sess.remote_players[other.first] = rp;
+        }
 
+        // 2b) Their soldier, whenever they have one this connection hasn't.
+        for (auto& kv : sess.remote_players) {
+            RemotePlayerChannels& rp = kv.second;
+            const game::ServerPlayerController* opc = world_->FindPlayerController(kv.first);
+            if (rp.pawn || !opc || !opc->pawn || opc->pawn->torn_off || opc->pawn->destroyed) continue;
+            if (sess.next_free_channel >= 0x800) break;
+            rp.pawn = opc->pawn;
+            rp.pawn_ch = sess.next_free_channel++;
             util::BitWriter pawn_payload;
             EncodePawnRep(pawn_payload, *rp.pawn, nullptr,
                           MakeRepContext(sess, rp.pawn_ch, /*for_owner=*/false));
             OpenActorChannel(client_id, rp.pawn_ch, rp.pawn->object_index, &pawn_payload, rp.pawn);
             sess.channel_max_index[rp.pawn_ch] = kPawnMaxIndex;
             sess.actor_channel[rp.pawn] = rp.pawn_ch;
-
-            rp.last_pri = *rp.pri;
             rp.last_pawn_rest = *rp.pawn;
             rp.last_pawn_move = *rp.pawn;
             rp.next_move_us = now_us + kMoveIntervalUs;
             rp.next_keyframe_us = now_us + kKeyframeIntervalUs;
-            LOG_INFO("Client %u: opened remote player %u (PRI ch=%u, Pawn ch=%u)",
-                     client_id, other.first, rp.pri_ch, rp.pawn_ch);
-            sess.remote_players[other.first] = rp;
+            LOG_INFO("Client %u: opened remote player %u's pawn (ch=%u)", client_id, kv.first, rp.pawn_ch);
         }
 
         // 3) Reliable diffs: PRI (name/score/ping...) and the pawn's
@@ -2311,6 +2472,7 @@ void ProtocolHandler::SyncRemotePlayers(uint32_t client_id, ClientSession& sess,
                 SendActorUpdateBunch(client_id, rp.pri_ch, d);
                 rp.last_pri = *rp.pri;
             }
+            if (!rp.pawn) continue;
             util::BitWriter p;
             RepContext ctx = MakeRepContext(sess, rp.pawn_ch, /*for_owner=*/false);
             ctx.fields = RepContext::Fields::kNoMovement;
@@ -2326,7 +2488,7 @@ void ProtocolHandler::SyncRemotePlayers(uint32_t client_id, ClientSession& sess,
     // 4) Movement: unreliable, 20Hz, keyframe every 1s.
     for (auto& kv : sess.remote_players) {
         auto& rp = kv.second;
-        if (now_us < rp.next_move_us) continue;
+        if (!rp.pawn || now_us < rp.next_move_us) continue;
         rp.next_move_us = now_us + kMoveIntervalUs;
         RepContext ctx = MakeRepContext(sess, rp.pawn_ch, /*for_owner=*/false);
         ctx.fields = RepContext::Fields::kMovementOnly;

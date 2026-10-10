@@ -95,6 +95,8 @@ struct ClientSession {
     // The pawn this client was last given (PossessPawn; doc sec 29).
     const game::ServerPawn* possessed_pawn = nullptr;
     bool match_opened = false;
+    uint32_t match_actor_serial_seen = 0;  // World::MatchActorSerial() of the open ES2 set
+    uint64_t next_wait_state_us = 0;       // next ClientGotoState('WaitingForMatchStart')
     uint32_t confirm_reload_sent = 0, mag_count_sent = 0;  // ServerPawn reload serials sent
     uint32_t breath_end_sent = 0;                           // ServerPawn::breath_end_serial sent
     uint32_t hit_sent = 0, sling_sent = 0, vault_sent = 0;  // ServerPawn notice serials sent
@@ -208,6 +210,10 @@ private:
     void SendHandshakeChallenge(uint32_t client_id);
     void SendStormAndWelcome(uint32_t client_id);   // bundles WELCOME into final packet
     void OpenInitialActorChannels(uint32_t client_id);  // post-JOIN: synthesize Ch=2+
+    // Round end / death / reset (doc sec 36).
+    void CloseDataActor(uint32_t client_id, ClientSession& sess, const game::ServerRoundActor* a);
+    void RetireOwnPawn(uint32_t client_id, ClientSession& sess);
+    void SendDeathRPCs(uint32_t client_id, ClientSession& sess);
 
     // Emit the open bunch for an actor channel: bDynamic=0 + ObjectIndex (31
     // bits, RIM(2^31)), optionally followed by the transient-actor

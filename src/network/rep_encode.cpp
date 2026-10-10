@@ -156,16 +156,23 @@ uint32_t EncodeGRIRep(BitWriter& w, const ServerGameReplicationInfo& cur,
     }
     // RepIndex 25 MessageOfTheDay, 26 ServerRegion — not modeled, skipped.
 
-    str_field(rep::GRI::AdminEmail, cur.admin_email, prev ? &prev->admin_email : nullptr);
-    str_field(rep::GRI::AdminName, cur.admin_name, prev ? &prev->admin_name : nullptr);
-    str_field(rep::GRI::ShortName, cur.short_name, prev ? &prev->short_name : nullptr);
-    str_field(rep::GRI::ServerName, cur.server_name, prev ? &prev->server_name : nullptr);
-    int_field(rep::GRI::MaxLives, cur.max_lives, prev ? &prev->max_lives : nullptr);
-    int_field(rep::GRI::TimeLimit, cur.time_limit, prev ? &prev->time_limit : nullptr);
-    int_field(rep::GRI::GoalScore, cur.goal_score, prev ? &prev->goal_score : nullptr);
-    int_field(rep::GRI::RemainingMinute, cur.remaining_minute, prev ? &prev->remaining_minute : nullptr);
-    int_field(rep::GRI::ElapsedTime, cur.elapsed_time, prev ? &prev->elapsed_time : nullptr);
-    int_field(rep::GRI::RemainingTime, cur.remaining_time, prev ? &prev->remaining_time : nullptr);
+    // Engine GameReplicationInfo: server name, limits, RemainingTime and
+    // ElapsedTime go only with the open (bNetInitial); RemainingMinute only
+    // after it (!bNetInitial && bNetDirty) -- retail sends no per-second
+    // GRI clock, only AA3's iMissionTimeRemaining (doc sec 36).
+    if (prev == nullptr) {
+        str_field(rep::GRI::AdminEmail, cur.admin_email, nullptr);
+        str_field(rep::GRI::AdminName, cur.admin_name, nullptr);
+        str_field(rep::GRI::ShortName, cur.short_name, nullptr);
+        str_field(rep::GRI::ServerName, cur.server_name, nullptr);
+        int_field(rep::GRI::MaxLives, cur.max_lives, nullptr);
+        int_field(rep::GRI::TimeLimit, cur.time_limit, nullptr);
+        int_field(rep::GRI::GoalScore, cur.goal_score, nullptr);
+        int_field(rep::GRI::ElapsedTime, cur.elapsed_time, nullptr);
+        int_field(rep::GRI::RemainingTime, cur.remaining_time, nullptr);
+    } else {
+        int_field(rep::GRI::RemainingMinute, cur.remaining_minute, &prev->remaining_minute);
+    }
     // RepIndex 37 bTrackStats, 38 bIsArbitrated — not modeled, skipped.
     bool_field(rep::GRI::bMatchIsOver, cur.b_match_is_over, prev ? &prev->b_match_is_over : nullptr);
     bool_field(rep::GRI::bMatchHasBegun, cur.b_match_has_begun, prev ? &prev->b_match_has_begun : nullptr);
@@ -308,6 +315,32 @@ uint32_t EncodeGRIRep(BitWriter& w, const ServerGameReplicationInfo& cur,
               prev ? &prev->respawn_players_needed[0] : nullptr);
     int_field(rep::GRI::iRespawnPlayersNeededTeam1, cur.respawn_players_needed[1],
               prev ? &prev->respawn_players_needed[1] : nullptr);
+
+    // Round results (doc sec 36). On the open only when set: the GRI open
+    // sits near the 4096-bit bunch limit (doc sec 27).
+    static const ServerGameReplicationInfo kFresh;
+    const ServerGameReplicationInfo& was = prev ? *prev : kFresh;
+    for (uint8_t t = 0; t < 2; ++t) {
+        // atsTeamScores[t]: a custom struct -- its three ints in order.
+        if (cur.team_scores[t] != was.team_scores[t]) {
+            w.WriteIntMax(rep::GRI::atsTeamScores, M);
+            w.WriteByte(t);
+            w.WriteInt(static_cast<uint32_t>(cur.team_scores[t].won));
+            w.WriteInt(static_cast<uint32_t>(cur.team_scores[t].lost));
+            w.WriteInt(static_cast<uint32_t>(cur.team_scores[t].tied));
+            ++n; if (field_ends) field_ends->push_back(w.GetBitCount());
+        }
+    }
+    if (cur.last_round_tied != was.last_round_tied)
+        bool_field(rep::GRI::bLastRoundTied, cur.last_round_tied, prev ? &prev->last_round_tied : nullptr);
+    if (cur.winning_objective != was.winning_objective)
+        str_field(rep::GRI::sWinningObjective, cur.winning_objective, prev ? &prev->winning_objective : nullptr);
+    if (cur.winning_action_player != was.winning_action_player)
+        str_field(rep::GRI::sWinningActionPlayer, cur.winning_action_player,
+                  prev ? &prev->winning_action_player : nullptr);
+    if (cur.battle_planning_time_remaining != was.battle_planning_time_remaining)
+        int_field(rep::GRI::iBattlePlanningTimeRemaining, cur.battle_planning_time_remaining,
+                  prev ? &prev->battle_planning_time_remaining : nullptr);
 #undef GRI_STR
 #undef GRI_INT
 
@@ -501,6 +534,31 @@ uint32_t EncodePCRep(BitWriter& w, const ServerPlayerController& cur,
     ref(rep::PC::Pawn, cur.pawn);
     ref(rep::PC::aassmSteamStatManager, cur.stat_manager);
     ref(rep::PC::PlayerProxy, cur.proxy);
+    // Spectating (retail t=81.83 death, t=227.34 round end; doc sec 36):
+    // bCollideWorld, the spectate hints and SpectatorMode -- only once they
+    // differ from the class defaults the client starts with.
+    static const ServerPlayerController kFresh;
+    const ServerPlayerController& was = initial ? kFresh : *prev;
+    if (cur.collide_world != was.collide_world) {
+        w.WriteIntMax(rep::PC::bCollideWorld, kPCMaxIndex);
+        w.WriteBit(cur.collide_world);
+        ++n;
+    }
+    if (cur.right_spectate_info != was.right_spectate_info) {
+        w.WriteIntMax(rep::PC::RightSpectateInfoString, kPCMaxIndex);
+        WriteStrProp(w, cur.right_spectate_info);
+        ++n;
+    }
+    if (cur.left_spectate_info != was.left_spectate_info) {
+        w.WriteIntMax(rep::PC::LeftSpectateInfoString, kPCMaxIndex);
+        WriteStrProp(w, cur.left_spectate_info);
+        ++n;
+    }
+    if (cur.spectator_mode != was.spectator_mode) {
+        w.WriteIntMax(rep::PC::SpectatorMode, kPCMaxIndex);
+        w.WriteBits(cur.spectator_mode, 2);   // eSpectatorMode, as the GRI's (doc sec 11.2)
+        ++n;
+    }
     return n;
 }
 
@@ -528,6 +586,11 @@ uint32_t EncodePlayerStorageProxyRep(BitWriter& w, const game::ServerPlayerStora
     if (prev && cur.incapacitated != prev->incapacitated) {
         w.WriteIntMax(P::bIncapacitated, M);
         w.WriteBit(cur.incapacitated);
+        ++n;
+    }
+    if ((prev && cur.is_spectating != prev->is_spectating) || (!prev && cur.is_spectating)) {
+        w.WriteIntMax(P::bIsSpectating, M);
+        w.WriteBit(cur.is_spectating);
         ++n;
     }
     if (initial || cur.active != prev->active) {
@@ -649,6 +712,16 @@ uint32_t EncodePawnRep(BitWriter& w, const ServerPawn& cur, const ServerPawn* pr
         w.WriteIntMax(rep::Pawn::bTearOff, M);
         w.WriteBit(true);
         ++n;
+    }
+    // Round end (retail t=227.34): the owner's pawn drops to SimulatedProxy
+    // and bNetOwner False once its controller lets go (doc sec 36).
+    if (owner && cur.unpossessed && prev && !prev->unpossessed) {
+        constexpr uint32_t kRoleSimulatedProxy = 1;
+        w.WriteIntMax(rep::Pawn::Role, M);
+        w.WriteBits(kRoleSimulatedProxy, 2);
+        w.WriteIntMax(rep::Pawn::bNetOwner, M);
+        w.WriteBit(false);
+        n += 2;
     }
     // Physics: SimulatedProxy only (with Velocity). EPhysics = 4 bits.
     if (!owner && (initial || cur.physics != prev->physics)) {

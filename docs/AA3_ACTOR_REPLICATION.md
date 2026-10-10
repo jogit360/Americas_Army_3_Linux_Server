@@ -3129,3 +3129,118 @@ and deployment timers 10; t=10.9s 'MissionPrePlanning_DeploymentWarning' +
 ClientDeploymentWarning(10); t=20.85s ClientClosePrePlanningTool; t=21.8s
 bMatchHasBegun, inventory, ClientRestart, GivePawn(pawn),
 ClientAdjustPosition, then move acks.
+
+## 36. Round end, scoreboard, next round; the original UnrealScript source (2026-10-10)
+
+> Sections 28-35 are cited by code comments (round phases, spawn, inventory,
+> doors/ES2, collision, bullets, vault/ladder, incapacitation) but were never
+> written up here; the commits e602c04bd / fa7a0c74c / 10a28c153 describe them.
+
+### 36.1 The scripts' source is in the packages
+
+The cooked script packages still carry every class's original `.uc` source as
+`TextBuffer` exports (`ScriptText`, outer = the class): AA3Baseline 1049,
+Engine 1234, AA3Game 43, GameFramework 9. Body after the properties and
+NetIndex: `Pos:i32, Top:i32, FString Text`. Extracted to
+`script_source/<Package>/<Class>.uc` (AA_GameInfo.uc is 8313 lines, with
+comments). Unlike the UELib decompiles (corrupt function bodies) this is the
+real game logic; only natives are missing (some carry their former script
+body in a comment, e.g. `AA_MCMissionManager.CheckForWinningTeam`).
+
+### 36.2 Retail ground truth
+
+Three round ends in `GamePlayPCAP_Legit_Server` (t=81.83 a withdraw, 367.91
+and 804.79 extractions) and one in the 2026-10-09 live capture (t=227.34, a
+fall incapacitating the only soldier). Decoded with a per-connection
+timeline (every bunch, classes from the channel opens).
+
+**Rules (source):**
+- `AA_GameInfo.MatchInProgress.Timer` (1 Hz) -> `CheckForWinningTeam` ->
+  `AA_MCMissionManager.IsTeamStillAlive(t)`: a team is alive while one of
+  its players has a pawn, isn't dead, waiting or incapacitated. A team that
+  had living players this round (`bHadValidPlayersDuringRound`) and has
+  none loses; neither team alive = tie (`AA_MCBothTeamsDiedSeqEvent`). A team
+  empty from the start doesn't count -- so one player alone ends the round
+  as a tie when downed (both retail single-player samples).
+- `AA_ExtractionVolume.HandlePawnEntry`: an assault-team (`IsTeamAssault`,
+  side-swap aware) pawn entering; with `iMinimumPlayerCount` > 0 that many
+  team members inside -> `bObjectiveCompleted`, `iObjectiveCompletedTeam`,
+  GRI `sWinningObjective = string(PreplanSymbol)` ('EPOC_Zulu') and
+  `sWinningActionPlayer`. Immediate (not on the timer).
+- Time limit: `AA_MCTimeLimitEndOfMatchSeqEvent` sets the win condition's
+  `iTimeExpiredWinner = GetDefendingTeam()`.
+- `AA_MCWinConditionsSeqAct`: `PlayVictorySound`/`PlayDefeatSound` =
+  `ClientPlaySound(S_Music...Victory/Defeat)` per team (a tie: defeat for
+  both), `bLastRoundTied`, `atsTeamScores[]` won/lost/tied.
+- `MatchEnded.BeginState`: `GameHasEnded` per player, `SetTimer(2.0,
+  'ResetLevel')`. `ResetLevel`: `iCurrentRound++`, `ClientDisplayScoreboard(
+  iEndRoundAARDisplayTimeSeconds=10, round)`, then `ShowScoreboard` for
+  `iScoreboardDisplayTimeSeconds + iEndRoundAARDisplayTimeSeconds` = 15 s.
+  After `iMaxRoundsPerMatch` (6) the match ends; sides swap at
+  `iAutoSwitchSidesRound` (4), announced at the end of round 3 ("Teams will
+  swap sides the next round.").
+
+**Wire (owner's connection):**
+
+| t | what |
+|---|---|
+| 0 | if alive: `ClientPlaySound(stinger)`, `ClientSetViewTarget(own PC)`, `ClientUnpossess`, `TS3ClientChangeChannel`, `ClientSetCameraMode('FreeCam')`, `ClientSetSpectatorMode('FreeCam')`, `HideScoreboard(True)`, `ClientUpdateSpectatorViewType`, `ClientGameEnded(False)` (False even for the winners). Already dead: stinger + `ClientGameEnded` only. Pawn: PRI/Owner/Controller None, Role SimulatedProxy, bNetOwner False, LastKnownPRI; inventory bNetOwner False. PC: bCollideWorld True, Pawn None, Right/LeftSpectateInfoString, SpectatorMode 1 |
+| +0.03 | GRI `bStopCountDown`, `bMatchIsOver`, `atsTeamScores[0..1]`, `bLastRoundTied` (+ `sWinningObjective`, `sWinningActionPlayer`); proxy `bIsDead`, `bIsSpectating`; `ClientUpdateScoreboard(False)`, `ClientGotoState('Spectating')` |
+| +2.0 | `ClientReset`, `ClientSetCameraMode('FirstPerson')`, `ClientSetSpectatorMode('FirstPerson')`, `ClientSetViewTarget(<an AA_Viewpoint>)`; every pawn + inventory channel closes; doors `IncMatchReset`+1, `ReplicatedStateName 'Latched'`; objective marker reset; `ClientDisplayScoreboard(10, round)`; GRI `bMatchIsOver False`, `MPStateName 'ShowScoreboard'`, `iBattlePlanningTimeRemaining 30`, `iCurrentRound+1`; PC bCollideWorld False |
+| +2.1 ... | `ClientGotoState('WaitingForMatchStart')` every 2 s until match start |
+| +17 | role selection: `TS3ClientChangeChannel`, `ClientEnterPrePlanningTool(True, False, False)`; GRI `iRoleSelectionTime 1` (roles carry over; 10 again on the swap round) |
+| +18 | `AA_SteamStatManager.ClientTransmitLastRoundStats()`, `ClientDeploymentWarning(10)` |
+| +28 | `ClientClosePrePlanningTool`, `ClientSteamStatUpdateMissionStart(False)`; ES2 objects closed and a new set opened; spawn as in round 1 |
+
+A death mid-round (t=81.83): inventory channels close at once (weapon,
+magazine and sight drop as an `AA_DroppedPickup_*`, not modelled yet), then
+`ClientPawnDied`, `ClientSetCameraMode('FirstPerson')`,
+`TS3ClientChangeChannel`, `ClientSetCameraMode('FreeCam')`,
+`ClientSetSpectatorMode('FreeCam')`, `HideScoreboard(True)`,
+`ClientUpdateSpectatorViewType`; later `ClientGotoState('Spectating')`.
+
+Object references: stingers = S_Music NetIndex 16 (defeat) / 17 (victory)
+(retail <obj 164221/164222>), viewpoints = Bridge_night_clear NetIndex 85-94
+(`AA_Viewpoint`). Retail's ObjectBases must be rebuilt from the same
+capture's USES (`extract_round_actors.retail_bases`); the old
+`retail_bases.json` in a scratchpad was from a different list.
+
+### 36.3 USES: the gametype level's own packages
+
+Retail's USES also list the running gametype level's dependencies with
+`BASEPKG=<level>` -- on Bridge classic `ES2_Objects` and `S_Music` -- and
+leave out the other gametype levels. Ours had neither, so nothing in those
+packages had an ObjectIndex (the stingers; also every ES2 object's
+`ES2ObjectMesh`, which went out as None). The server now appends the
+level's `BASEPKG=<level>` entries from `config/maps/<level>.aa3.manifest.json`
+at load; appended, so no other package's ObjectBase moves.
+
+### 36.4 Implementation
+
+- `aa3-tools/map_manifest/extract_mission_rules.py` -> `config/maps/<level>.rules.json`:
+  extraction objectives (team, min players, PreplanSymbol, the volume's
+  world box = brush Model bounds + Location; Bridge: x -7008..-6208, y
+  2864..3216, z -32..224 -- retail's winning extractor stood at y=2866) and
+  the base map's viewpoints.
+- `World`: phases `kRoundOver` (MatchEnded, 2 s, MPStateName unchanged) and
+  `kShowScoreboard` (15 s); `CheckRoundEnd` (extraction every tick; time
+  limit and team death on the 1 Hz tick, after a 2 s spawn grace);
+  `EndRound` (scores, objective, unpossess, spectate); `ResetLevel` (pawns
+  `destroyed`, doors/windows/objective/ES2 back to round start). Side swap
+  from round 4 flips the extracting team (so the defenders for the time
+  limit) and sets GRI `bTeamSideSwappingRound`; roles and spawn points don't
+  swap yet. After round 6 the match restarts on the same map (retail would
+  travel to the next map). `MissionTimeLimit` (ini) overrides the 420 s.
+- Protocol: per-phase RPCs above (`SendPhaseRPCs`), the owner death bundle
+  (`SendDeathRPCs`), `RetireOwnPawn` (inventory + pawn channels),
+  `CloseDataActor`. Other players' PRI channels now stay open while they
+  have no soldier (retail keeps them for the scoreboard); their pawn
+  channel opens/closes with the body.
+- GRI per-second `ElapsedTime`/`RemainingTime` removed: they are
+  `bNetInitial` only in `GameReplicationInfo` (retail never sends them after
+  the open); the old "RemainingTime 0 -> bMatchIsOver" rule is gone.
+- Encoders: GRI `atsTeamScores` (3 ints), `bLastRoundTied`,
+  `sWinningObjective`, `sWinningActionPlayer`, `iBattlePlanningTimeRemaining`
+  (on the open only when set -- the GRI open is near the 4096-bit limit);
+  PC `bCollideWorld`, spectate strings, `SpectatorMode`; proxy
+  `bIsSpectating`; owner pawn Role/bNetOwner drop on unpossess.

@@ -285,5 +285,59 @@ void BuildClientAdvancedInventoryInitializeAmmoMagazineCountRPC(util::BitWriter&
     if (magazine_count != 0) w.WriteInt(static_cast<uint32_t>(magazine_count));
 }
 
+// Static object parameter (a sound, a placed viewpoint): Send flag, then
+// bDynamic=0 + ObjectIndex, RIM(2^31) -- retail ClientPlaySound(<obj
+// 164221>), ClientSetViewTarget(<obj 178661>) (doc sec 36).
+void WriteRPCStaticObjectParam(util::BitWriter& w, uint32_t object_index) {
+    w.WriteBit(object_index != 0);
+    if (object_index == 0) return;
+    w.WriteBit(false);
+    w.WriteIntMax(object_index, 0x80000000u);
+}
+
+void BuildPCCallRPC(util::BitWriter& w, uint32_t rep_index) {
+    w.WriteIntMax(rep_index, kPCMaxIndex);
+}
+
+void BuildClientPlaySoundRPC(util::BitWriter& w, uint32_t sound_object_index) {
+    w.WriteIntMax(rep::PC::ClientPlaySound, kPCMaxIndex);
+    WriteRPCStaticObjectParam(w, sound_object_index);     // ASound
+}
+
+void BuildClientSetViewTargetObjectRPC(util::BitWriter& w, uint32_t object_index) {
+    w.WriteIntMax(rep::PC::ClientSetViewTarget, kPCMaxIndex);
+    WriteRPCStaticObjectParam(w, object_index);           // A
+    w.WriteBit(false);                                    // TransitionParams: Send=0
+}
+
+void BuildClientSetSpectatorModeRPC(util::BitWriter& w, const std::string& mode) {
+    w.WriteIntMax(rep::PC::ClientSetSpectatorMode, kPCMaxIndex);
+    WriteRPCNameParam(w, mode);                           // NewMode
+}
+
+void BuildHideScoreboardRPC(util::BitWriter& w, bool hide_steam_scoreboard) {
+    w.WriteIntMax(rep::PC::HideScoreboard, kPCMaxIndex);
+    WriteRPCBoolParam(w, hide_steam_scoreboard);
+}
+
+void BuildClientUpdateScoreboardRPC(util::BitWriter& w, bool visibility_override) {
+    w.WriteIntMax(rep::PC::ClientUpdateScoreboard, kPCMaxIndex);
+    WriteRPCBoolParam(w, visibility_override);
+}
+
+void BuildClientGameEndedRPC(util::BitWriter& w, bool is_winner) {
+    w.WriteIntMax(rep::PC::ClientGameEnded, kPCMaxIndex);
+    w.WriteBit(false);                                    // EndGameFocus: Send=0 (None)
+    WriteRPCBoolParam(w, is_winner);
+}
+
+void BuildClientDisplayScoreboardRPC(util::BitWriter& w, int32_t aar_seconds, int32_t round) {
+    w.WriteIntMax(rep::PC::ClientDisplayScoreboard, kPCMaxIndex);
+    w.WriteBit(aar_seconds != 0);
+    if (aar_seconds != 0) w.WriteInt(static_cast<uint32_t>(aar_seconds));
+    w.WriteBit(round != 0);
+    if (round != 0) w.WriteInt(static_cast<uint32_t>(round));
+}
+
 } // namespace network
 } // namespace aa3

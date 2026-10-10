@@ -1,317 +1,185 @@
 # AA3 Linux Server Implementation
 
-//Currently THIS IS STILL A WORK IN PROGRESS and MINIMAL TESTING HAS BEEN DONE
-//BUT it does seem to load a player on the MAP and does allow the player to move around it and shoot
+//Currently THIS IS STILL A WORK IN PROGRESS -- tested with the real AA3 client
+//(Wine) and with scripted bot clients, not yet with a full server of players.
+//A player can join, pick a team and role, spawn on Bridge, move, shoot, open
+//doors, vault, climb, get wounded/incapacitated, and play full rounds and matches.
 
-//To Be Continued
-
-
-A Linux dedicated server implementation for America's Army 3.
-
+A Linux dedicated server for America's Army 3 (v3.3.1), reimplemented from
+the retail server's network traffic, the cooked game packages and the
+original UnrealScript source that ships inside them.
 
 ## Quick Start
 
 ### Prerequisites
-- Linux x86_64 (Ubuntu 20.04 LTS or later)
-- GCC 10+ or Clang 12+
-- CMake 3.16+
-- Steamworks SDK (from partner.steamgames.com)
+- Linux x86_64, GCC 10+ or Clang 12+, CMake 3.16+
+- Steamworks SDK in `external/steamworks_sdk_linux/` (only for Steam mode;
+  `--standalone` runs without it)
+- A legit AA3 install: the map data in `config/maps/` and `data/collision/`
+  is generated from its cooked packages
 
 ### Build & Run
 ```bash
-# Download Steamworks SDK and extract to external/steamworks_sdk_linux/
 cd aa3-linux-server
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
-
-# Run server
-./aa3_server -c ../config/aa3_server.ini
+mkdir -p build && cd build
+cmake .. && make -j$(nproc)
+cd ..                                   # the server reads config/ relative to here
+build/aa3_server -c config/aa3_server.ini --standalone
 ```
-
-See `docs/PHASE1_BUILD_INSTRUCTIONS.md` for detailed build instructions.
+Clients connect by IP (console `open <ip>:8777`) or through the in-game LAN
+browser. `--steam` (default) also advertises to the Steam master server.
 
 ## Project Status
 
-- **Current Phase**: Phase 1 (Steamworks SDK Integration)
-- **Estimated Total Duration**: 72-95 hours
-- **Progress**: In development
+**Playable on Bridge (classic mode).** Last updated 2026-10-10.
+
+| Area | Status |
+|------|--------|
+| Handshake, Steam auth (or standalone), map handoff (`WELCOME` + `USES`) | done, retail-exact |
+| Packet layer: bunches, reliability, retransmission, acks | done |
+| Actor replication: WorldInfo, GRI, TeamInfo, PRI, PC, Pawn, inventory, round actors | done |
+| Client RPC decoding (movement, posture, fire, reload, use...) | done (99.998% of retail bunches) |
+| LAN browser beacon (in-game server list + Join) | done |
+| Team join, role selection, deployment, spawn with per-role kits | done |
+| Movement, stance, sprint, vault/mantle, ladders, hold breath | done |
+| Map collision (static meshes, terrain, BSP) + server-side bullet traces | done |
+| Weapons: fire modes, ammo, reloads; breakable windows; doors; ES2 objects | done |
+| Damage by hit zone, incapacitation (bleed-out, withdraw), death | done |
+| Round end: elimination, extraction, time limit; scoreboard; next round; 6-round match with side swap | done (bot-tested) |
+| Stats (server-authoritative, retail-exact encoding, JSON export + web viewer) | done; few counters fed yet |
+| Medical treatment (healing a downed teammate) | **blocked**: client offers no treat option yet |
+| Dropped weapons, grenades, M320, TAH/VIP/other modes, map rotation | not started |
+
+Full write-up, section by section with the retail evidence:
+`docs/AA3_ACTOR_REPLICATION.md` (sections 1-27, 36; 28-35 are only in commit messages so far).
 
 ## Directory Structure
 
 ```
 aa3-linux-server/
 ├── src/
-│   ├── main.cpp                      Entry point
-│   ├── engine/
-│   │   ├── engine_init.cpp          Engine lifecycle
-│   │   └── engine_config.cpp        Config file parsing
-│   ├── auth/
-│   │   └── steam_auth.cpp           Steamworks SDK integration
+│   ├── main.cpp                 entry point, CLI flags
+│   ├── engine/                  config, engine loop, map manifests, package reader
+│   ├── auth/steam_auth.cpp      Steamworks game server (auth + advertise)
 │   ├── network/
-│   │   ├── socket_manager.cpp       UDP socket layer
-│   │   └── network_layer.cpp        Network protocol
+│   │   ├── socket_manager.cpp   UDP
+│   │   ├── protocol_handler.cpp handshake, channels, reliability, per-client replication
+│   │   ├── rep_encode.cpp       property replication (NetSerializeItem formats)
+│   │   ├── rpc_encode.cpp       server -> client RPCs
+│   │   ├── rpc_decode.cpp       client -> server RPCs
+│   │   ├── lan_beacon.cpp       LAN browser (ACPU beacon on 9000/9001)
+│   │   └── a2s_info.cpp         Steam A2S query replies
 │   ├── game/
-│   │   ├── game_loop.cpp            Main game loop
-│   │   └── player_manager.cpp       Player management
-│   └── util/
-│       └── logging.cpp              Logging system
-│
-├── include/
-│   ├── engine/engine.h
-│   ├── auth/steam_auth.h
-│   ├── network/network.h
-│   ├── game/game.h
-│   └── util/logging.h
-│
+│   │   ├── world.cpp            game state: teams, rounds, spawns, weapons, damage
+│   │   ├── collision.cpp        BVH + line traces over the map's collision
+│   │   └── stats_export.cpp     stats JSON
+│   └── util/                    bit streams, JSON, CRC, logging
+├── include/                     headers; network/rep_layout_gen.h = generated RepIndex tables
 ├── config/
-│   ├── aa3_server.ini               Server configuration
-│   └── steam_appid.txt              Steam app identifier
-│
-├── external/
-│   └── steamworks_sdk_linux/        (Download from partner.steamgames.com)
-│       ├── public/steam/
-│       └── redistributable_bin/linux64/
-│
-├── docs/
-│   ├── IMPLEMENTATION_ROADMAP.md    Overall project plan
-│   ├── PHASE1_BUILD_INSTRUCTIONS.md Build guide
-│   ├── PHASE1_IMPLEMENTATION_GUIDE.md Implementation details
-│   └── ...
-│
-├── CMakeLists.txt                  Build configuration
-└── README.md                        This file
+│   ├── aa3_server.ini           server configuration
+│   ├── spawn_inventory.json     the spawn kit, extracted from retail
+│   └── maps/                    per-map data: *.aa3.manifest.json (USES), *.round.json,
+│                                *.join.json, *.match.json, *.map_actors.json,
+│                                *.windows.json, *.rules.json
+├── data/collision/              <map>.col, generated (git-ignored)
+├── tools/                       aa3_build_manifests (package dumper/manifest builder),
+│                                gen_rep_layout.py, stats_web.py ...
+├── tests/                       unit tests + fake_client.py / bot_client.py
+└── docs/                        protocol and replication notes
 ```
 
-## Architecture Overview
-
-The server uses a modular architecture with clear separation of concerns:
-
-```
-┌─────────────────────────────────────────┐
-│         Main Loop (60 Hz)               │
-├─────────────────────────────────────────┤
-│  ├─ Update Steamworks (auth callbacks) │
-│  ├─ Poll network sockets                │
-│  ├─ Update game logic                   │
-│  └─ Broadcast player states             │
-└─────────────────────────────────────────┘
-         ▲              ▲         ▲
-         │              │         │
-    ┌────┴──┐  ┌───────┴──┐  ┌──┴───┐
-    │Steam  │  │Network   │  │Game  │
-    │Auth   │  │Layer     │  │Logic │
-    └───────┘  └──────────┘  └──────┘
-```
-
-## Key Components
-
-### SteamAuthManager (src/auth/steam_auth.cpp)
-Handles Steam authentication via Steamworks SDK:
-- Initializes `ISteamGameServer` interface
-- Manages player authentication sessions
-- Processes Steam callbacks
-- Handles server heartbeats
-
-### SocketManager (src/network/socket_manager.cpp)
-Implements UDP network communication:
-- UDP socket creation and binding
-- Non-blocking I/O
-- Client packet handling
-- State broadcasting
-
-### Engine (src/engine/)
-Central game engine:
-- Config file loading (INI format)
-- Timing system (delta time calculation)
-- Main game loop orchestration
-- Subsystem coordination
+Companion tools in the parent repo: `aa3-tools/map_manifest/` (pcap
+decoders, round/map actor and mission-rule extractors) and
+`aa3-tools/collision/` (collision export).
 
 ## Configuration
 
-Server configuration is stored in `config/aa3_server.ini`:
+`config/aa3_server.ini` (selected keys):
 
 ```ini
 ServerName = "AA3 Server"
-MapName = "Compound"
-Port = 7777
+MapName = "Bridge_night_clear"   # base map; needs config/maps/<MapName>.aa3.manifest.json
+GameModeLevel = ""               # gametype sublevel; empty = <Base>_inf_classic_large_dev
+Port = 8777
 QueryPort = 27015
-MaxPlayers = 32
-SteamAppID = 10
+Standalone = 0                   # 1 = no Steam (also --standalone)
+LanBeacon = 1                    # in-game LAN browser
+RoleSelectionTime = 10           # seconds (retail 10)
+DeploymentTime = 10              # seconds (retail 10)
+MissionTimeLimit = 420           # round length, seconds (retail Bridge classic 420)
+RespawnDelay = 0                 # seconds; 0 = no respawn until the next round (retail classic)
+IncapBleeding = true             # gunshot-incapacitated soldiers bleed out
+SpawnPoint0 = "x,y,z,yaw"        # per team; defaults to retail's Black spawn
+StatsFile = ""                   # write player stats JSON here
 ```
 
-See `config/aa3_server.ini` for all available options.
+## Generating map data
 
-## Building from Source
-
-### Full Build Instructions
-See `docs/PHASE1_BUILD_INSTRUCTIONS.md` for:
-- Detailed prerequisites
-- SDK download & installation
-- Compilation steps
-- Troubleshooting guide
-
-### Quick Build
-```bash
-mkdir build && cd build
-cmake ..
-make
-./aa3_server
-```
-
-## Running the Server
+Per-map files come from a legit install's cooked packages (decompressed
+copies in `../clean_packages/`) and retail captures:
 
 ```bash
-# Default config
-./aa3_server
-
-# Custom config
-./aa3_server -c /path/to/config.ini
-
-# Debug logging
-LOG_LEVEL=DEBUG ./aa3_server
+# collision
+python3 ../aa3-tools/collision/export_collision.py Bridge_night_clear data/collision/Bridge_night_clear.col
+# end-of-round rules (extraction volumes, viewpoints)
+python3 ../aa3-tools/map_manifest/extract_mission_rules.py --level Bridge_inf_classic_large_dev \
+    --map Bridge_night_clear --out config/maps/Bridge_inf_classic_large_dev.rules.json
 ```
+Round/join/match actor data: `aa3-tools/map_manifest/extract_round_actors.py`
+(needs a retail capture of that map). Only Bridge has the full set today.
 
-### Expected Output
-```
-[2026-05-03 10:15:30] [INFO] ========================================
-[2026-05-03 10:15:30] [INFO] AA3 Linux Server - Starting
-[2026-05-03 10:15:30] [INFO] ========================================
-[2026-05-03 10:15:30] [INFO] Config file: ../config/aa3_server.ini
-[2026-05-03 10:15:31] [INFO] Engine initialized successfully
-[2026-05-03 10:15:31] [INFO] SteamGameServer initialized successfully
-[2026-05-03 10:15:31] [INFO] Starting main game loop
-```
+## Testing
 
-## Development
-
-### Project Phases
-
-| Phase | Component | Status | Effort |
-|-------|-----------|--------|--------|
-| 1 | Steamworks SDK | 🔄 | 15-20 hrs |
-| 2 | Network & Players | ⏳ | 12-15 hrs |
-| 3 | Game Logic | ⏳ | 20-25 hrs |
-| 4 | Maps & Config | ⏳ | 6-8 hrs |
-| 5 | Client Integration | ⏳ | 8-10 hrs |
-| 6 | Performance | ⏳ | 4-6 hrs |
-| 7 | Admin Tools | ⏳ | 3-5 hrs |
-| 8 | Deployment | ⏳ | 4-6 hrs |
-
-See `docs/IMPLEMENTATION_ROADMAP.md` for complete project plan.
-
-### Code Style
-
-- **Language**: C++17
-- **Naming**: CamelCase for classes, snake_case for functions
-- **Comments**: Minimal; code should be self-documenting
-- **Formatting**: 4-space indentation, opening braces on same line
-
-### Logging
-
-Use the logging macros defined in `include/util/logging.h`:
-
-```cpp
-LOG_DEBUG("Debug message");
-LOG_INFO("Information: %d", value);
-LOG_WARN("Warning: %s", message);
-LOG_ERROR("Error: %s", error);
-```
-
-Set log level:
-```cpp
-LOG_SET_LEVEL(LOG_LEVEL_DEBUG);
-```
-
-### Testing
-
-Unit tests for each component are needed:
 ```bash
-# Run tests (to be implemented)
-./run_tests.sh
+# scripted players against a running server (port from the ini)
+python3 tests/bot_client.py --port 8777 --team 1 --role 1 --no-fire           # a target
+python3 tests/bot_client.py --port 8777 --team 0 --role 1 --rate 2            # shoots the nearest soldier
+python3 tests/bot_client.py --port 8777 --team 0 --no-fire --goto=-6612,2900,40   # walks into Bridge's extraction zone
+# decode a capture against a class's replication layout
+python3 ../aa3-tools/map_manifest/decode_rep.py --pcap cap.pcapng --frame 1 --to-frame 99999 \
+    --ch 4 --class AA_GameReplicationInfo --cdo --server-port 8777
 ```
+Unit tests (`build/rep_roundtrip_test`, `rpc_decode_pcap_test`,
+`lan_beacon_test`, `collision_test`) take fixture arguments; see their
+sections in `docs/AA3_ACTOR_REPLICATION.md`.
 
-## Architecture Decisions
+The real client runs under Wine against this server; see the notes in the
+parent repo's session memory / docs.
 
-### Authentication: Steamworks SDK ✅
-- Replaces original AA3 authentication servers
-- Leverages Steam's proven infrastructure
-- No external server dependencies
+## Reverse-engineering sources
 
-### Network Model: Server-Authoritative ✅
-- Server is source of truth for all game state
-- Prevents client-side cheating
-- Fair gameplay for all players
-
-### Timing: 60 Hz Game Loop ✅
-- 16.67 ms per tick
-- Smooth gameplay and network sync
-- Scalable to 32+ players
-
-### Anti-Cheat: None (Optional VAC) ✅
-- PunkBuster system removed (obsolete)
-- Server-side validation for key events
-- Optional Valve Anti-Cheat integration via Steam
+- Retail captures (`../GamePlayPCAP_Legit_Server.pcapng` and later live
+  captures): ground truth for every wire format and timing.
+- `../script_source/<Package>/<Class>.uc`: the original UnrealScript source,
+  extracted from the `TextBuffer` exports still inside the cooked `.u`
+  packages. Game rules come from here; natives are only in the exe.
+- `AA3Game.exe` (Ghidra project in `../AA3_Decomp`, live gdb on the retail
+  server/client) for native code.
 
 ## Known Limitations
 
-- **Phase 1**: Network client handling not yet implemented
-- **Phase 1**: No player state tracking yet
-- **Phase 1**: No actual game logic yet
-- SteamAppID set to 10 (test ID, will need production AA3 ID)
+- One map's data set (Bridge classic). Other maps need their manifests,
+  collision, actor and rules files generated.
+- No server-side movement physics: client locations are trusted.
+- Healing doesn't work yet (the client never sends the treatment request).
+- Side swap (round 4) only flips which team attacks; roles and spawn points
+  don't swap. After round 6 the match restarts on the same map.
+- Dropped weapon pickups, grenades and other game modes are not implemented.
+- No anti-cheat.
 
 ## Next Steps
 
-1. **Immediate**: Complete Phase 1 testing and validation
-2. **Phase 2**: Implement network layer and player management
-3. **Phase 3**: Implement game logic (objectives, scoring, etc.)
-4. **Phase 4-8**: Complete remaining phases per roadmap
-
-See `docs/PHASE1_IMPLEMENTATION_GUIDE.md` for detailed Phase 1 info.
-
-## Troubleshooting
-
-### Build Issues
-- Verify CMake 3.16+: `cmake --version`
-- Verify C++17 support: `g++ --version` (need GCC 7+)
-- Check Steamworks SDK installation: `ls external/steamworks_sdk_linux/public/steam/steam_gameserver.h`
-
-### Runtime Issues
-- Missing `steam_appid.txt`: Copy from config/ to binary directory
-- SteamGameServer_Init failed: Check Steamworks SDK installation
-- Socket bind error: Ensure port 7777 is available
-
-See `docs/PHASE1_BUILD_INSTRUCTIONS.md` for more troubleshooting.
-
-## References
-
-### Documentation
-- `docs/IMPLEMENTATION_ROADMAP.md` - Project timeline and phases
-- `docs/PHASE1_IMPLEMENTATION_GUIDE.md` - Detailed Phase 1 implementation
-- `docs/PHASE1_BUILD_INSTRUCTIONS.md` - Build and setup guide
-
-### External Resources
-- [Steamworks SDK](https://partner.steamgames.com/doc/sdk/)
-- [ISteamGameServer API](https://partner.steamgames.com/doc/api/ISteamGameServer)
-- [America's Army 3](https://www.americasarmy.com/)
-
-### Original Analysis
-- Analysis files: `/home/odeyin/Documents/AA3/DissAssembledFunctions/analysis/`
-- Decompiled functions: `/home/odeyin/Documents/AA3/DissAssembledFunctions/Critical/`
+1. Real-client test of round end, scoreboard and spectator camera.
+2. Medical treatment: read the client's `CanTreat_Pawn` path in
+   `script_source/AA3Baseline/AA_PlayerController.uc` / `AA_UIManager_Medic.uc`.
+3. Dropped weapons (`AA_DroppedPickup_*`), team-1 spawn points, full side swap.
+4. Data for more maps, then map rotation.
 
 ## License
 
 This project is reverse-engineered from America's Army 3. Use for educational purposes only.
 
-## Authors
-
-- Reverse engineering and initial analysis: Team effort
-- Linux server implementation: Ongoing collaborative project
-- Phase 1 implementation: 2026-05-03
-
 ---
 
-**Status**: Active Development  
-**Current Phase**: 1 (Steamworks SDK Integration)  
-**Last Updated**: 2026-05-03
-
+**Status**: Active development -- playable rounds on Bridge
+**Last Updated**: 2026-10-10

@@ -5,6 +5,8 @@ on its InventoryManager), then turns toward the nearest other soldier and
 fires semi-auto -- a target that shoots back.
 
   bot_client.py --port 8777 --team 1 --role 1 [--seconds 600] [--rate 1.0]
+  bot_client.py ... --no-fire --goto -6612,2900,40   (walk-in test: report that
+                                                      location after --goto-after s)
 
 Built on fake_client.Client (handshake, reliability, acks)."""
 import argparse
@@ -51,7 +53,11 @@ def main():
     ap.add_argument("--no-fire", action="store_true")
     ap.add_argument("--shots", type=int, default=0,
                     help="stop after this many shots (0 = no limit); 2 torso hits incapacitate")
+    ap.add_argument("--goto", help="x,y,z: report this location in ServerMove (the server "
+                    "trusts ClientLoc) -- e.g. inside an extraction volume (doc sec 36)")
+    ap.add_argument("--goto-after", type=float, default=5.0, help="seconds after spawning")
     a = ap.parse_args()
+    goto = tuple(float(v) for v in a.goto.split(",")) if a.goto else None
 
     c = fc.Client("Bot", a.host, a.port)
     c.handshake(); c.recv_all(1.0)
@@ -109,6 +115,9 @@ def main():
             dx, dy, dz = tgt[0] - me[0], tgt[1] - me[1], (tgt[2] + 10) - (me[2] + EYE)
             yaw = int(math.atan2(dy, dx) * 32768 / math.pi) & 0xFFFF
             pitch = int(math.atan2(dz, math.hypot(dx, dy)) * 32768 / math.pi) & 0xFFFF
+        if goto and time.time() - t0 >= a.goto_after and me != goto:
+            print("moving to", goto)
+            me = goto
         ts += 0.033
         c.send_move(ts, me or (0, 0, 0), yaw, pitch)
         if not a.no_fire and tgt and time.time() >= next_shot and not (a.shots and shots >= a.shots):

@@ -43,9 +43,30 @@ public:
     //   every team player is ready) -> MissionPrePlanning_DeploymentWarning
     //   (10s) -> InProgress (bMatchHasBegun). The protocol layer watches
     //   PhaseSerial() and sends each phase's client RPCs.
-    enum class MatchPhase { kPendingMatch, kRoleSelection, kDeploymentWarning, kInProgress };
+    // After InProgress (doc sec 36, retail AA_GameInfo states MatchEnded ->
+    // ResetLevel -> ShowScoreboard): kRoundOver is MatchEnded (bMatchIsOver,
+    // pawns unpossessed, MPStateName unchanged) for 2s; kShowScoreboard is
+    // the reset level with the after-action report for 15s; then the next
+    // round's role selection (1s unless a side swap or a new match).
+    enum class MatchPhase { kPendingMatch, kRoleSelection, kDeploymentWarning, kInProgress,
+                            kRoundOver, kShowScoreboard };
     MatchPhase Phase() const { return phase_; }
     uint32_t PhaseSerial() const { return phase_serial_; }
+    // The round that just ended: winning raw team index (-1 = tie) and its
+    // number (the GRI's iCurrentRound moves on at the reset).
+    int32_t RoundWinner() const { return round_winner_; }
+    int32_t FinishedRound() const { return finished_round_; }
+    // True for the round end that announces the side swap.
+    bool NextRoundSwaps() const { return next_round_swaps_; }
+    // Wire ObjectIndex of the victory / defeat stinger (S_Music) and of a
+    // random AA_Viewpoint of the map (the reset's view target).
+    uint32_t StingerIndex(bool victory) const;
+    uint32_t RandomViewpointIndex() const;
+    // Bumped when ES2/match actors get reset to their round-start state: the
+    // protocol closes their channels and reopens them at match start.
+    uint32_t MatchActorSerial() const { return match_actor_serial_; }
+    // Raw team index of the player's TeamInfo (-1 = none).
+    static int32_t TeamOf(const ServerPlayerController& pc);
     // ServerSetPlayerReady: counts toward GRI iReadyVotes.
     void SetPlayerReady(ServerPlayerController& pc, bool ready);
 
@@ -159,6 +180,13 @@ private:
     // ObjectBase of AA3Baseline / AA3Game in this map's PackageMap; 0 until
     // BindPackageMap succeeds.
     void ConfigureGameMode(const engine::MapManifest& manifest, const std::string& configured);
+public:
+    // "Bridge" for Bridge_night_clear (from its <Base>_pathing shard), and the
+    // gametype level the server runs: configured, else <Base>_inf_classic_large_dev.
+    static std::string MapBaseName(const engine::MapManifest& manifest);
+    static std::string ResolveGameModeLevel(const engine::MapManifest& manifest,
+                                            const std::string& configured);
+private:
     bool LoadRoundActors(const std::string& path);
     // Actor data files from extract_round_actors.py: each actor's fields plus
     // references kept as the retail channel they pointed at.
@@ -204,6 +232,8 @@ public:
     // Seconds before a killed player gets a new soldier (0 = not this round).
     void SetRespawnDelay(double s) { respawn_delay_ = s; }
     void SetIncapBleeding(bool b) { incap_bleeding_ = b; }
+    // Round time limit in seconds (retail Bridge classic 420); 0 keeps it.
+    void SetTimeLimit(int32_t s) { if (s > 0) time_limit_seconds_ = s; }
 private:
     double respawn_delay_ = 0.0;
     bool incap_bleeding_ = true;   // IncapBleeding=false: downed soldiers never bleed out (testing)
@@ -228,6 +258,36 @@ private:
 
     void UpdateMatch(double delta_time);
     void EnterPhase(MatchPhase phase);
+    // Round end (doc sec 36): retail's CheckForWinningTeam/IsTeamStillAlive
+    // (alive = has a pawn, not incapacitated) on the 1 Hz match timer, the
+    // extraction volumes every tick, and the time limit.
+    void CheckRoundEnd(bool second_tick);
+    bool TeamStillAlive(int32_t team) const;
+    int32_t ExtractingTeam(int32_t rule_team) const { return swapped_ ? 1 - rule_team : rule_team; }
+    void EndRound(int32_t winner, const char* reason, ServerPawn* completed_by = nullptr,
+                  const std::string& objective = "");
+    void ResetLevel();
+    bool LoadMissionRules(const std::string& path);
+    struct ExtractionRule {
+        int32_t team = 0;
+        int32_t min_players = 1;
+        std::string objective;
+        std::vector<std::array<float, 6>> boxes;   // min xyz, max xyz
+    };
+    std::vector<ExtractionRule> extraction_rules_;
+    std::vector<uint32_t> viewpoints_;              // map NetIndex of AA_Viewpoint actors
+    std::array<bool, 2> had_valid_players_{};       // AA_TeamInfo.bHadValidPlayersDuringRound
+    int32_t round_winner_ = -1;
+    int32_t finished_round_ = 0;
+    bool next_round_swaps_ = false;
+    bool swapped_ = false;                          // AA_MCMissionManager.bSwappingSidesNow
+    bool match_over_ = false;                       // the last round of the match ended
+    int32_t swap_round_ = 4;                        // iAutoSwitchSidesRound (retail default)
+    int32_t role_selection_seconds_ = 10;           // configured iRoleSelectionTime
+    int32_t time_limit_seconds_ = 0;                // configured iMissionTimeLimitSeconds
+    uint32_t match_actor_serial_ = 0;
+    std::vector<std::vector<DataField>> match_actor_start_;  // ES2 actors' round-start fields
+    int32_t match_resets_ = 0;                      // AA_Door.IncMatchReset
     size_t PlayersOnTeams() const;
     void RecountReadyVotes();
     MatchPhase phase_ = MatchPhase::kPendingMatch;

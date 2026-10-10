@@ -150,7 +150,7 @@ struct ServerGameReplicationInfo : ServerActor {
     bool   b_allow_preplanning = false;
     bool   b_role_swapping_disabled = false;
     int32_t i_current_round = 1;
-    int32_t i_max_rounds_per_match = 1;
+    int32_t i_max_rounds_per_match = 6;    // retail AA_GameInfo default (doc sec 36)
     int32_t i_vip_raw_team_index = -1;
     std::string s_base_map_name;
     std::string s_mission_type;
@@ -203,6 +203,19 @@ struct ServerGameReplicationInfo : ServerActor {
     // counts iMissionTimeRemaining down from iMissionTimeLimitSeconds.
     int32_t mission_time_limit_seconds = 0;
     std::array<int32_t, 2> respawn_players_needed = {0, 0};   // Team0, Team1
+    // Round results (doc sec 36): atsTeamScores[2] (TeamScores struct),
+    // bLastRoundTied, and on an objective win the objective's PreplanSymbol
+    // and the player who completed it. iBattlePlanningTimeRemaining = 30
+    // while the scoreboard shows.
+    struct TeamScore {
+        int32_t won = 0, lost = 0, tied = 0;
+        bool operator!=(const TeamScore& o) const { return won != o.won || lost != o.lost || tied != o.tied; }
+    };
+    std::array<TeamScore, 2> team_scores{};
+    bool last_round_tied = false;
+    std::string winning_objective;
+    std::string winning_action_player;
+    int32_t battle_planning_time_remaining = 0;
 
     // Pointers to the team list, by team index. Hosted as references
     // into the world's team vector — keep raw pointers since the world
@@ -271,6 +284,13 @@ struct ServerPlayerController : ServerActor {
     // this round). Retail Bridge classic waits for the next round.
     bool died = false;
     double respawn_at = -1.0;
+    // Spectating (death / round end; doc sec 36): Actor.bCollideWorld and
+    // AA_PlayerController.SpectatorMode / Left|RightSpectateInfoString, as
+    // retail sets them for a player without a pawn.
+    bool collide_world = false;
+    uint8_t spectator_mode = 0;          // eSpectatorMode, 2 bits
+    std::string right_spectate_info;
+    std::string left_spectate_info;
 
     // AA3 posture state (doc sec 22), driven by ServerSetCrouch/SetProne/
     // StandUp/HoldSprint/StopSprint/ToggleStance; mirrored into the pawn's
@@ -393,6 +413,12 @@ struct ServerPawn : ServerActor {
     // Death (doc sec 33): torn off like retail (bTearOff, Health 0, refs
     // cleared) -- the body stays on clients as a ragdoll and the channels close.
     bool torn_off = false;
+    // Round end (doc sec 36): the controller let go of the pawn (retail
+    // AA_PlayerController.GameHasEnded -> UnPossess) -- Owner/Controller/PRI
+    // None, the owner's copy drops to SimulatedProxy. The body stays until
+    // the level reset, which `destroyed` marks: every channel to it closes.
+    bool unpossessed = false;
+    bool destroyed = false;
     // Incapacitation (doc sec 35, retail capture 2026-10-09 t=227.04):
     // damage that leaves Health at or under AA_Pawn.IncapacitationHealth (25)
     // puts the soldier down instead of killing: Health clamped to 25,
@@ -514,6 +540,7 @@ struct ServerPlayerStorageProxy : ServerActor {
     ServerPlayerReplicationInfo* pri = nullptr;
     bool is_dead = true;     // no pawn yet
     bool incapacitated = false;  // bIncapacitated (doc sec 35)
+    bool is_spectating = false;  // bIsSpectating: dead / round over (doc sec 36)
     bool active = true;
 };
 

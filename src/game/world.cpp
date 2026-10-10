@@ -68,21 +68,32 @@ uint32_t World::GameIndex(uint32_t n) const {
     return base_aa3game_ ? base_aa3game_ + n : 0;
 }
 
-void World::ConfigureGameMode(const engine::MapManifest& manifest,
-                              const std::string& configured) {
+std::string World::MapBaseName(const engine::MapManifest& manifest) {
     // The map's sublevels are its "shard" USES entries; the base name is
     // what precedes "_pathing" (Bridge_pathing -> Bridge).
-    std::string base;
     const std::string suffix = "_pathing";
+    std::string base;
     for (const auto& u : manifest.uses)
         if (u.role == "shard" && u.pkg.size() > suffix.size() &&
             u.pkg.compare(u.pkg.size() - suffix.size(), suffix.size(), suffix) == 0)
             base = u.pkg.substr(0, u.pkg.size() - suffix.size());
+    return base;
+}
+
+std::string World::ResolveGameModeLevel(const engine::MapManifest& manifest,
+                                        const std::string& configured) {
+    if (!configured.empty()) return configured;
+    const std::string base = MapBaseName(manifest);
+    return base.empty() ? "" : base + "_inf_classic_large_dev";
+}
+
+void World::ConfigureGameMode(const engine::MapManifest& manifest,
+                              const std::string& configured) {
+    const std::string base = MapBaseName(manifest);
+    const std::string suffix = "_pathing";
     streaming_levels_.clear();
     pathing_level_ = base.empty() ? "" : base + suffix;
-    game_mode_level_ = !configured.empty() ? configured
-                     : base.empty()        ? ""
-                                           : base + "_inf_classic_large_dev";
+    game_mode_level_ = ResolveGameModeLevel(manifest, configured);
     for (const auto& u : manifest.uses)
         if (u.role == "shard" && u.ext == "aa3") streaming_levels_.push_back(u.pkg);
 
@@ -198,21 +209,28 @@ void World::SetPlayerReady(ServerPlayerController& pc, bool ready) {
 
 void World::EnterPhase(MatchPhase phase) {
     static const char* kNames[] = {"PendingMatch", "MissionPrePlanning_RoleSelection",
-                                   "MissionPrePlanning_DeploymentWarning", "MatchInProgress"};
+                                   "MissionPrePlanning_DeploymentWarning", "MatchInProgress",
+                                   "MatchInProgress", "ShowScoreboard"};
     phase_ = phase;
     ++phase_serial_;
     phase_clock_ = 0.0;
     second_clock_ = 0.0;
     if (gri_) {
-        gri_->mp_state_name = kNames[static_cast<int>(phase)];
+        // MatchEnded isn't replicated: MPStateName stays 'MatchInProgress'
+        // until the reset (retail t=227.37-229.37; doc sec 36).
+        if (phase != MatchPhase::kRoundOver) gri_->mp_state_name = kNames[static_cast<int>(phase)];
         switch (phase) {
         case MatchPhase::kRoleSelection:
             // Only ready votes cast during role selection count: clients
             // also send ServerSetPlayerReady from the pre-join menu.
-            for (auto& pc : controllers_) pc->ready = false;
+            for (auto& pc : controllers_) {
+                pc->ready = false;
+                if (pc->pri) pc->pri->vote_ready = false;
+            }
             RecountReadyVotes();
             gri_->role_selection_time_remaining = gri_->role_selection_time;
             gri_->deployment_time_remaining = gri_->deployment_time;
+            gri_->battle_planning_time_remaining = 0;
             gri_->b_allow_preplanning = true;
             break;
         case MatchPhase::kDeploymentWarning:
@@ -224,16 +242,20 @@ void World::EnterPhase(MatchPhase phase) {
             // classic) and its countdown, respawn counts.
             gri_->deployment_time_remaining = 0;
             gri_->b_match_has_begun = true;
-            gri_->mission_time_limit_seconds = gri_->mission_time_remaining > 0
-                ? gri_->mission_time_remaining : game_info_->default_time_limit_seconds;
-            gri_->mission_time_remaining = gri_->mission_time_limit_seconds;
+            if (time_limit_seconds_ <= 0)
+                time_limit_seconds_ = gri_->mission_time_remaining > 0
+                    ? gri_->mission_time_remaining : game_info_->default_time_limit_seconds;
+            gri_->mission_time_limit_seconds = time_limit_seconds_;
+            gri_->mission_time_remaining = time_limit_seconds_;
             gri_->respawn_players_needed = {1, 1};
+            had_valid_players_ = {false, false};
             break;
         default:
             break;
         }
     }
-    LOG_INFO("Match phase -> %s", kNames[static_cast<int>(phase)]);
+    LOG_INFO("Match phase -> %s (round %d)", phase == MatchPhase::kRoundOver ? "MatchEnded"
+             : kNames[static_cast<int>(phase)], gri_ ? gri_->i_current_round : 0);
 }
 
 void World::UpdateMatch(double dt) {
@@ -247,7 +269,11 @@ void World::UpdateMatch(double dt) {
         // Retail started role selection ~0.8s after the first player joined a
         // team, even alone (iMinPlayerCount=2 only stops stats being saved).
         if (PlayersOnTeams() == 0) phase_clock_ = 0.0;
-        else if (phase_clock_ >= 0.8) { RecountReadyVotes(); EnterPhase(MatchPhase::kRoleSelection); }
+        else if (phase_clock_ >= 0.8) {
+            gri_->role_selection_time = role_selection_seconds_;
+            RecountReadyVotes();
+            EnterPhase(MatchPhase::kRoleSelection);
+        }
         break;
     case MatchPhase::kRoleSelection:
         if (tick && gri_->role_selection_time_remaining > 0) --gri_->role_selection_time_remaining;
@@ -266,8 +292,254 @@ void World::UpdateMatch(double dt) {
         // Retail t=23.83: bStopCountDown False ~1s after MatchInProgress.
         if (gri_->b_stop_count_down && phase_clock_ >= 1.0) gri_->b_stop_count_down = false;
         if (tick && gri_->mission_time_remaining > 0) --gri_->mission_time_remaining;
+        CheckRoundEnd(tick);
+        break;
+    case MatchPhase::kRoundOver:
+        // AA_GameInfo.MatchEnded: SetTimer(2.0, false, 'ResetLevel').
+        if (phase_clock_ >= 2.0) ResetLevel();
+        break;
+    case MatchPhase::kShowScoreboard:
+        // iScoreboardDisplayTimeSeconds + iEndRoundAARDisplayTimeSeconds
+        // (5 + 10), then AA_MCMissionManager.PrepStartMatch.
+        if (phase_clock_ < 15.0) break;
+        if (match_over_) {
+            // Retail would travel to the next map in the rotation; this
+            // server restarts the match on the same one.
+            match_over_ = false;
+            gri_->i_current_round = 1;
+            gri_->team_scores = {};
+            gri_->last_round_tied = false;
+            swapped_ = false;
+            LOG_INFO("Match over: starting a new match");
+        }
+        if (PlayersOnTeams() == 0) { EnterPhase(MatchPhase::kPendingMatch); break; }
+        // Roles carry over (IsRoleSelectRound: iRoleSelectionTime 1), except
+        // in a new match and on the swap round, where the sides' roles
+        // change (retail round 4: 10s).
+        if (gri_->i_current_round == swap_round_ && !swapped_) swapped_ = true;
+        gri_->b_team_side_swapping_round = swapped_;
+        gri_->role_selection_time =
+            (gri_->i_current_round == 1 || gri_->i_current_round == swap_round_) ? role_selection_seconds_ : 1;
+        RecountReadyVotes();
+        EnterPhase(MatchPhase::kRoleSelection);
         break;
     }
+}
+
+int32_t World::TeamOf(const ServerPlayerController& pc) {
+    return pc.pri && pc.pri->team ? pc.pri->team->team_index : -1;
+}
+
+// AA_MCMissionManager.IsTeamStillAlive: someone on the team has a pawn and
+// isn't incapacitated (dead, waiting and downed players don't count). With
+// RespawnDelay set, a player waiting to respawn keeps the team in it too.
+bool World::TeamStillAlive(int32_t team) const {
+    for (const auto& pc : controllers_) {
+        if (TeamOf(*pc) != team) continue;
+        if (pc->pawn && !pc->pawn->torn_off && !pc->pawn->incapacitated) return true;
+        if (respawn_delay_ > 0 && pc->died && pc->respawn_at >= 0) return true;
+    }
+    return false;
+}
+
+void World::CheckRoundEnd(bool second_tick) {
+    if (phase_clock_ < 2.0) return;   // the round's soldiers spawn first
+    // Extraction (AA_ExtractionVolume.HandlePawnEntry): enough of the
+    // assault team's soldiers inside the volume -- retail Bridge classic
+    // needs one -- wins at once.
+    for (const auto& rule : extraction_rules_) {
+        const int32_t team = ExtractingTeam(rule.team);
+        int32_t inside = 0;
+        ServerPawn* first = nullptr;
+        for (const auto& pc : controllers_) {
+            ServerPawn* p = pc->pawn;
+            if (TeamOf(*pc) != team || !p || p->torn_off || p->incapacitated) continue;
+            for (const auto& b : rule.boxes) {
+                if (p->location[0] >= b[0] && p->location[1] >= b[1] && p->location[2] >= b[2] &&
+                    p->location[0] <= b[3] && p->location[1] <= b[4] && p->location[2] <= b[5]) {
+                    if (!first) first = p;
+                    ++inside;
+                    break;
+                }
+            }
+        }
+        if (inside > 0 && inside >= std::max<int32_t>(1, rule.min_players)) {
+            EndRound(team, "extraction", first, rule.objective);
+            return;
+        }
+    }
+    if (!second_tick) return;
+    // Time limit (AA_MCTimeLimitEndOfMatchSeqEvent): the defending team wins.
+    if (gri_->mission_time_remaining <= 0) {
+        const int32_t defenders = extraction_rules_.empty() ? -1 : 1 - ExtractingTeam(extraction_rules_[0].team);
+        EndRound(defenders, "time limit");
+        return;
+    }
+    // Team death (AA_GameInfo MatchInProgress.Timer + CheckForWinningTeam):
+    // a team that had soldiers this round and has none left loses; nobody
+    // left on either side is a tie.
+    const bool alive0 = TeamStillAlive(0), alive1 = TeamStillAlive(1);
+    if (alive0) had_valid_players_[0] = true;
+    if (alive1) had_valid_players_[1] = true;
+    if (!alive0 && !alive1) EndRound(-1, "both teams down");
+    else if (!alive0 && had_valid_players_[0]) EndRound(1, "team 0 down");
+    else if (!alive1 && had_valid_players_[1]) EndRound(0, "team 1 down");
+}
+
+// Round end as retail (AA_MCWinConditionsSeqAct.Activated ->
+// ProcessEndOfGame -> WriteEndOfGameStats -> AA_GameInfo.MatchEnded;
+// GamePlayPCAP_Legit_Server t=81.89 / 367.91, live capture t=227.34):
+// GRI bStopCountDown, bMatchIsOver, atsTeamScores, bLastRoundTied and the
+// winning objective; every living soldier's controller lets go of it
+// (GameHasEnded -> UnPossess) and spectates.
+void World::EndRound(int32_t winner, const char* reason, ServerPawn* completed_by,
+                     const std::string& objective) {
+    gri_->b_stop_count_down = true;
+    gri_->b_match_is_over = true;
+    if (winner == 0 || winner == 1) {
+        gri_->team_scores[static_cast<size_t>(winner)].won++;
+        gri_->team_scores[static_cast<size_t>(1 - winner)].lost++;
+    } else {
+        for (auto& t : gri_->team_scores) t.tied++;
+    }
+    gri_->last_round_tied = winner < 0;
+    gri_->winning_objective = objective;
+    gri_->winning_action_player = completed_by && completed_by->pri ? completed_by->pri->player_name : "";
+    if (!objective.empty()) {
+        constexpr uint32_t kCompletedTeam = 29, kCompleted = 31;   // AA_MCObjectiveMarker
+        for (auto& a : join_actors_)
+            if (a->class_name == "AA_MCExtractionObjectiveMarker") {
+                a->Set(kCompletedTeam, -1, DataValue::Int(winner));
+                a->Set(kCompleted, -1, DataValue::Bool(true));
+            }
+    }
+    for (auto& pc : controllers_) {
+        if (!pc->pri || !pc->pri->OnPlayableTeam()) continue;
+        if (ServerPawn* p = pc->pawn) {
+            p->unpossessed = true;
+            p->last_known_pri = p->pri;
+            p->pri = nullptr;
+            p->controller = nullptr;
+            p->trigger_held = false;
+            p->burst_left = 0;
+            p->holding_breath = false;
+            pc->pawn = nullptr;
+        }
+        pc->collide_world = true;
+        pc->spectator_mode = 1;
+        pc->right_spectate_info = "Next View Point";
+        pc->left_spectate_info = "Previous Player";
+        if (pc->proxy) {
+            pc->proxy->is_dead = true;
+            pc->proxy->is_spectating = true;
+            pc->proxy->incapacitated = false;
+        }
+        pc->pri->b_incapacitated = false;
+    }
+    reloads_.clear();
+    deliberate_reloads_.clear();
+    round_winner_ = winner;
+    finished_round_ = gri_->i_current_round;
+    match_over_ = gri_->i_current_round >= gri_->i_max_rounds_per_match;
+    // AA_MCMissionManager.IsNextRoundSwapping.
+    next_round_swaps_ = gri_->i_current_round + 1 != gri_->i_max_rounds_per_match &&
+                        gri_->i_current_round + 1 == swap_round_;
+    LOG_INFO("Round %d over (%s): %s", finished_round_, reason,
+             winner < 0 ? "tie" : (winner == 0 ? "team 0 wins" : "team 1 wins"));
+    EnterPhase(MatchPhase::kRoundOver);
+}
+
+// AA_GameInfo.MatchEnded.ResetLevel, 2s after the round ended (retail
+// t=229.31): every soldier goes, the level's actors go back to their
+// round-start state (doors IncMatchReset + 'Latched', windows whole, the
+// objective open), the round counter moves on and the scoreboard shows.
+void World::ResetLevel() {
+    for (auto& p : pawns_) p->destroyed = true;
+    for (auto& pc : controllers_) {
+        pc->pawn = nullptr;
+        pc->died = false;
+        pc->respawn_at = -1.0;
+        pc->collide_world = false;
+        if (pc->pri) pc->pri->b_dead = false;
+    }
+    reloads_.clear();
+    deliberate_reloads_.clear();
+    door_timers_.clear();
+    ++match_resets_;
+    constexpr uint32_t kIncMatchReset = 28, kStateName = 30;            // AA_Door
+    constexpr uint32_t kCollideActors = 10, kShatteredFlags = 23, kCrackedFlags = 24;
+    for (auto& a : map_actors_) {
+        if (a->class_name == "AA_Door") {
+            DataValue latched; latched.kind = DataValue::Kind::kName; latched.s = "Latched";
+            a->Set(kIncMatchReset, -1, DataValue::Int(match_resets_));
+            a->Set(kStateName, -1, latched);
+        } else if (a->class_name == "AA_BreakableWindow" && a->Get(kCollideActors, -1)) {
+            a->Set(kCollideActors, -1, DataValue::Bool(true));
+            collision_.SetOwnerEnabled(a->cdo_net_index + 1, true);
+        }
+    }
+    window_hits_.clear();
+    for (auto& a : join_actors_) {
+        if (a->class_name == "AA_BreakableWindowManager") {
+            for (auto& f : a->fields)
+                if (f.idx == kShatteredFlags || f.idx == kCrackedFlags) f.v = DataValue::Int(0);
+        } else if (a->class_name == "AA_MCExtractionObjectiveMarker" && a->Get(31, -1)) {
+            a->Set(29, -1, DataValue::Int(-1));
+            a->Set(31, -1, DataValue::Bool(false));
+        }
+    }
+    // ES2 objects: retail closes them at the next match start and opens a
+    // fresh set (t=255.34).
+    for (size_t i = 0; i < match_actors_.size() && i < match_actor_start_.size(); ++i)
+        match_actors_[i]->fields = match_actor_start_[i];
+    ++match_actor_serial_;
+    gri_->b_match_is_over = false;
+    gri_->battle_planning_time_remaining = 30;
+    if (!match_over_) gri_->i_current_round++;
+    EnterPhase(MatchPhase::kShowScoreboard);
+}
+
+uint32_t World::StingerIndex(bool victory) const {
+    // S_Music.Stingers.S_Music_Stingers_AA3_Victory/Defeat_WB_USoundCue
+    // (AA_MCWinConditionsSeqAct.PlayVictorySound): NetIndex 17 / 16, retail
+    // <obj 164222> / <obj 164221>.
+    return ObjectIndex("S_Music", victory ? 17 : 16);
+}
+
+uint32_t World::RandomViewpointIndex() const {
+    if (viewpoints_.empty()) return 0;
+    return ObjectIndex(map_name_, viewpoints_[static_cast<size_t>(std::rand()) % viewpoints_.size()]);
+}
+
+bool World::LoadMissionRules(const std::string& path) {
+    std::ifstream f(path);
+    if (!f) return false;
+    std::stringstream ss;
+    ss << f.rdbuf();
+    std::string err;
+    auto doc = util::ParseJson(ss.str(), &err);
+    if (!doc) { LOG_ERROR("%s: %s", path.c_str(), err.c_str()); return false; }
+    extraction_rules_.clear();
+    for (const auto& e : (*doc)["extraction"].arr) {
+        ExtractionRule r;
+        r.team = static_cast<int32_t>(e["extracting_team"].Int());
+        r.min_players = static_cast<int32_t>(e["min_players"].Int(1));
+        r.objective = e["objective"].Str();
+        for (const auto& b : e["boxes"].arr) {
+            std::array<float, 6> box{};
+            for (int k = 0; k < 3; ++k) {
+                box[k] = static_cast<float>(b["min"].arr.size() > static_cast<size_t>(k) ? b["min"].arr[k].num : 0);
+                box[k + 3] = static_cast<float>(b["max"].arr.size() > static_cast<size_t>(k) ? b["max"].arr[k].num : 0);
+            }
+            r.boxes.push_back(box);
+        }
+        extraction_rules_.push_back(r);
+    }
+    viewpoints_.clear();
+    for (const auto& v : (*doc)["viewpoints"].arr) viewpoints_.push_back(static_cast<uint32_t>(v.Int()));
+    LOG_INFO("Mission rules: %zu extraction objective(s), %zu viewpoints from %s",
+             extraction_rules_.size(), viewpoints_.size(), path.c_str());
+    return true;
 }
 
 void ServerRoundActor::Set(uint32_t idx, int32_t elem, const DataValue& v) {
@@ -562,6 +834,7 @@ bool World::AssignRole(ServerPlayerController& pc, int32_t role_index) {
 void World::SetRoundTimes(int32_t role_selection_seconds, int32_t deployment_seconds) {
     if (!gri_) return;
     if (role_selection_seconds > 0) gri_->role_selection_time = role_selection_seconds;
+    role_selection_seconds_ = gri_->role_selection_time;
     if (deployment_seconds > 0) gri_->deployment_time = deployment_seconds;
 }
 
@@ -666,7 +939,8 @@ ServerPawn* World::SpawnPawn(ServerPlayerController& pc) {
         pawn_inventory_[pc.pawn] = std::move(items);
     }
     pawns_.push_back(std::move(pawn));
-    if (pc.proxy) pc.proxy->is_dead = false;
+    if (pc.proxy) { pc.proxy->is_dead = false; pc.proxy->is_spectating = false; }
+    pc.collide_world = false;
     LOG_INFO("Spawned %s (%s) at (%.0f, %.0f, %.0f)", pc.pri->player_name.c_str(),
              pc.pri->current_class_role_id.c_str(), sp.loc[0], sp.loc[1], sp.loc[2]);
     return pc.pawn;
@@ -1224,7 +1498,14 @@ void World::KillPawn(ServerPawn& victim, ServerPawn* killer) {
         killer->pri->score += 1;
     }
     if (pc) {
-        if (pc->proxy) { pc->proxy->is_dead = true; pc->proxy->incapacitated = false; }
+        if (pc->proxy) {
+            pc->proxy->is_dead = true;
+            pc->proxy->incapacitated = false;
+            pc->proxy->is_spectating = true;
+        }
+        // Spectating until the next spawn (retail t=81.83).
+        pc->collide_world = true;
+        pc->spectator_mode = 1;
         pc->pawn = nullptr;
         pc->died = true;
         pc->respawn_at = respawn_delay_ > 0 ? clock_ + respawn_delay_ : -1.0;
@@ -1534,6 +1815,9 @@ bool World::BindPackageMap(const engine::MapManifest& manifest,
             match_actors_ = Instantiate(t, {});
         LOG_INFO("Mission actors: %zu at join, %zu at match start", join_actors_.size(),
                  match_actors_.size());
+        match_actor_start_.clear();
+        for (const auto& a : match_actors_) match_actor_start_.push_back(a->fields);
+        LoadMissionRules("config/maps/" + game_mode_level_ + ".rules.json");
     }
     // Breakable windows: map NetIndex -> manager bit (export_windows.py).
     window_index_.clear();
@@ -1655,10 +1939,7 @@ void World::Update(double delta_time) {
             gri_->second_count   -= 1.0f;
             gri_->elapsed_time   += 1;
             gri_->remaining_time = std::max(0, gri_->remaining_time - 1);
-            gri_->remaining_minute = gri_->remaining_time / 60;
-        }
-        if (gri_->remaining_time == 0) {
-            gri_->b_match_is_over = true;
+            // RemainingMinute stays: retail never updates it (no samples).
         }
     }
 }
