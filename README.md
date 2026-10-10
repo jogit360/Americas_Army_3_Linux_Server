@@ -1,6 +1,13 @@
 # AA3 Linux Server Implementation
 
-A Linux dedicated server implementation for America's Army 3 using Steamworks SDK for authentication.
+//Currently THIS IS STILL A WORK IN PROGRESS and MINIMAL TESTING HAS BEEN DONE
+//BUT it does seem to load a player on the MAP and does allow the player to move around it and shoot
+
+//To Be Continued
+
+
+A Linux dedicated server implementation for America's Army 3.
+
 
 ## Quick Start
 
