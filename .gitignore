@@ -1,0 +1,30 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.so.*
+
+# Game asset mirror — populated by the operator from a legit AA3 install.
+# Not redistributable; 1.2+ GB of cooked packages. Anchored with a leading
+# slash so it only matches the top-level maps/, not config/maps/ which
+# holds the small JSON manifest files.
+/maps/
+
+# Editor noise
+*.swp
+*.swo
+.vscode/
+.idea/
+*~
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Local-only config overrides
+config/aa3_server.local.ini
+
+# Collision worlds generated from the cooked maps by
+# aa3-tools/collision/export_collision.py (doc sec 32); large, not committed.
+/data/collision/

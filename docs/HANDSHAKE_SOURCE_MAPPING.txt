@@ -1,0 +1,54 @@
+# America's Army 3: Protocol & Handshake Function Mapping
+
+This file lists the specific functions in the provided Unreal Engine 3 source and the AA3 binary disassembly where the handshake and network protocol logic was identified.
+
+## 1. Network Layer & Packet Framing (SessionUID / Sequences)
+These functions handle the raw UDP byte-stream, including the 24-bit SessionUID and the 1-byte packet sequence.
+
+- **Source Code**:
+  - `UNetConnection::ReceivedPacket` (`UnrealEngine3/Development/Src/Engine/Src/UnConn.cpp:907`)
+  - `UIpNetConnectionSteamworks::LowLevelSend` (`UnrealEngine3/Development/Src/OnlineSubsystemSteamworks/Src/UnNetSteamworks.cpp`)
+- **Binary Disassembly**:
+  - `FUN_00ca3260` (Main packet receiver; handles SessionUID extraction)
+  - `FUN_00ca2cb0` (Packet sender; handles SessionUID prefixing)
+
+## 2. Handshake State Machine (Binary Stage)
+These functions handle the initial binary handshake (Opcodes 21, 4, 7, 5).
+
+- **Source Code**:
+  - `UControlChannel::ReceivedBunch` (`UnrealEngine3/Development/Src/Engine/Src/UnChan.cpp:657`)
+  - `FNetControlMessage<NMT_HandshakeStart>::Receive` (`UnChan.cpp:687`)
+  - `FNetControlMessage<NMT_HandshakeChallenge>::Send` (`UnChan.cpp:704`)
+  - `FNetControlMessage<NMT_HandshakeResponse>::Receive` (`UnChan.cpp:726`)
+- **Binary Disassembly**:
+  - `FUN_009f6940` (Central hub for handshake opcodes; contains the main `switch` statement for NMT messages)
+  - `FUN_0046e830` (Network message dispatcher used to send the binary challenge)
+
+## 3. Protocol Negotiation (Text/Game Stage)
+These functions handle the text-based command sequence (HELLO, CHALLENGE, LOGIN, USES, WELCOME) that occurs after the binary handshake.
+
+- **Source Code**:
+  - `UControlChannel::ReceivedBunch` (`UnChan.cpp`, cases for text parsing)
+- **Binary Disassembly**:
+  - `FUN_009f6940` (Specifically the section checking for wide-string prefixes: `L"CHALLENGE"`, `L"LOGIN"`, `L"WELCOME"`, `L"USES"`)
+  - `FUN_00bc7b70` (Utility function used to compare incoming string prefixes like "LOGIN")
+  - `FUN_00bc9df0` (Utility function used to extract values from strings like "LEVEL=" or "CHALLENGE=")
+
+## 4. Handshake Security & Hashing (CRC32)
+These functions implement the proprietary salted hash verification.
+
+- **Source Code**:
+  - `appStrCrc` (`UnrealEngine3/Development/Src/Core/Src/UnMisc.cpp:1641`)
+  - `GCRCTable` initialization (`UnrealEngine3/Development/Src/Core/Src/UnName.cpp`)
+- **Binary Disassembly**:
+  - `FUN_004106c0` (The binary implementation of the UE3 `appStrCrc` algorithm)
+  - **Salt**: `"895fcf626f55798667e4e94cb7a636af"` (Hardcoded in `UnChan.cpp:737`)
+
+## 5. Control Message Definitions
+The actual opcode values (NMT numbers) were identified using these headers.
+
+- **Header File**: `UnrealEngine3/Development/Src/Engine/Inc/UnChan.h`
+- **Critical Macros**:
+  - `DEFINE_CONTROL_CHANNEL_MESSAGE_ONEPARAM(HandshakeStart, 26, BYTE)`
+  - `DEFINE_CONTROL_CHANNEL_MESSAGE_TWOPARAM(HandshakeChallenge, 3, INT, FString)`
+  - Note: AA3 shifted several of these from standard UDK values (e.g., 26 -> 21).

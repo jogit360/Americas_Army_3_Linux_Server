@@ -1,0 +1,1381 @@
+{
+  "_comment": "Ground truth UPackageMap::List, read directly from a live retail AA3Game_console.exe dedicated server's process memory via gdb on 2026-07-23, while a real client (player 'DrAxEl') was connected and playing on Bridge_night_clear. See aa3-linux-server/docs/AA3_ACTOR_REPLICATION.md section 11.7 for full derivation. Struct: FPackageInfo, sizeof=0x44 (68 bytes); fields verified via disassembly of AA3Game.exe: PackageName FName @0x00, Parent UPackage* @0x08, ObjectBase INT @0x1c, ObjectCount INT @0x20, LocalGeneration INT @0x24, RemoteGeneration INT @0x28. UPackageMap::List itself is at offset 0x40 (Data ptr) / 0x44 (ArrayNum) within the UPackageMap object. Formula confirmed exact: wire_ObjectIndex = ObjectBase[package] + Object->NetIndex (no fudge constant -- the historical '+19' was two compounding static-analysis errors canceling out).",
+  "capture_time": "2026-07-23T20:36:00",
+  "list_num": 171,
+  "packages": [
+    {
+      "index": 0,
+      "name_idx": 0,
+      "name_num": 1,
+      "object_base": 0,
+      "object_count": 1328,
+      "note": "Core (matches static analysis exactly)",
+      "name": "None"
+    },
+    {
+      "index": 1,
+      "name_idx": 21,
+      "name_num": 0,
+      "object_base": 1328,
+      "object_count": 30965,
+      "note": "Engine (presumed, by manifest order)",
+      "name": "Engine"
+    },
+    {
+      "index": 2,
+      "name_idx": 12796,
+      "name_num": 0,
+      "object_base": 32293,
+      "object_count": 9,
+      "name": "EngineFonts"
+    },
+    {
+      "index": 3,
+      "name_idx": 12797,
+      "name_num": 0,
+      "object_base": 32302,
+      "object_count": 139,
+      "name": "EngineMaterials"
+    },
+    {
+      "index": 4,
+      "name_idx": 16633,
+      "name_num": 0,
+      "object_base": 32441,
+      "object_count": 57,
+      "name": "NodeBuddies"
+    },
+    {
+      "index": 5,
+      "name_idx": 12599,
+      "name_num": 0,
+      "object_base": 32498,
+      "object_count": 187,
+      "name": "EditorResources"
+    },
+    {
+      "index": 6,
+      "name_idx": 12798,
+      "name_num": 0,
+      "object_base": 32685,
+      "object_count": 7,
+      "name": "EngineMeshes"
+    },
+    {
+      "index": 7,
+      "name_idx": 20292,
+      "name_num": 0,
+      "object_base": 32692,
+      "object_count": 18,
+      "name": "SoundNodeVOIP_Test"
+    },
+    {
+      "index": 8,
+      "name_idx": 12595,
+      "name_num": 0,
+      "object_base": 32710,
+      "object_count": 11,
+      "name": "EditorMeshes"
+    },
+    {
+      "index": 9,
+      "name_idx": 12594,
+      "name_num": 0,
+      "object_base": 32721,
+      "object_count": 284,
+      "name": "EditorMaterials"
+    },
+    {
+      "index": 10,
+      "name_idx": 12799,
+      "name_num": 0,
+      "object_base": 33005,
+      "object_count": 13,
+      "name": "EngineResources"
+    },
+    {
+      "index": 11,
+      "name_idx": 3968,
+      "name_num": 0,
+      "object_base": 33018,
+      "object_count": 83,
+      "name": "GameFramework"
+    },
+    {
+      "index": 12,
+      "name_idx": 3987,
+      "name_num": 0,
+      "object_base": 33101,
+      "object_count": 729,
+      "name": "UnrealScriptTest"
+    },
+    {
+      "index": 13,
+      "name_idx": 4054,
+      "name_num": 0,
+      "object_base": 33830,
+      "object_count": 321,
+      "name": "GFxUI"
+    },
+    {
+      "index": 14,
+      "name_idx": 3560,
+      "name_num": 0,
+      "object_base": 34151,
+      "object_count": 606,
+      "name": "RadialMenu"
+    },
+    {
+      "index": 15,
+      "name_idx": 22916,
+      "name_num": 0,
+      "object_base": 34757,
+      "object_count": 1032,
+      "name": "AA_UIDefaultSkin"
+    },
+    {
+      "index": 16,
+      "name_idx": 22917,
+      "name_num": 0,
+      "object_base": 35789,
+      "object_count": 1708,
+      "name": "AA_UIDerivedSkin"
+    },
+    {
+      "index": 17,
+      "name_idx": 5746,
+      "name_num": 0,
+      "object_base": 37497,
+      "object_count": 864,
+      "name": "OnlineSubsystemAA3"
+    },
+    {
+      "index": 18,
+      "name_idx": 4858,
+      "name_num": 0,
+      "object_base": 38361,
+      "object_count": 39408,
+      "note": "AA3Baseline (ObjectCount matches static analysis exactly; ObjectBase is 18 higher than the old static computation of 38343 -- this is the resolved discrepancy)",
+      "name": "AA3Baseline"
+    },
+    {
+      "index": 19,
+      "name_idx": 42367,
+      "name_num": 0,
+      "object_base": 77769,
+      "object_count": 2183,
+      "name": "Sold_Tech"
+    },
+    {
+      "index": 20,
+      "name_idx": 23646,
+      "name_num": 0,
+      "object_base": 79952,
+      "object_count": 5480,
+      "name": "AA_AuthUI"
+    },
+    {
+      "index": 21,
+      "name_idx": 23752,
+      "name_num": 0,
+      "object_base": 85432,
+      "object_count": 43,
+      "name": "AA_FlashBang_Effects_Materials"
+    },
+    {
+      "index": 22,
+      "name_idx": 36246,
+      "name_num": 0,
+      "object_base": 85475,
+      "object_count": 1158,
+      "name": "MasterMaterials"
+    },
+    {
+      "index": 23,
+      "name_idx": 24113,
+      "name_num": 0,
+      "object_base": 86633,
+      "object_count": 893,
+      "name": "AA_TC_UIScenes"
+    },
+    {
+      "index": 24,
+      "name_idx": 24276,
+      "name_num": 0,
+      "object_base": 87526,
+      "object_count": 3454,
+      "name": "AA_UI"
+    },
+    {
+      "index": 25,
+      "name_idx": 24286,
+      "name_num": 0,
+      "object_base": 90980,
+      "object_count": 15605,
+      "name": "AA_UIFrontEnd"
+    },
+    {
+      "index": 26,
+      "name_idx": 5744,
+      "name_num": 0,
+      "object_base": 106585,
+      "object_count": 1244,
+      "name": "AGP_HUD"
+    },
+    {
+      "index": 27,
+      "name_idx": 30793,
+      "name_num": 0,
+      "object_base": 107829,
+      "object_count": 997,
+      "name": "Editor_UI"
+    },
+    {
+      "index": 28,
+      "name_idx": 36518,
+      "name_num": 0,
+      "object_base": 108826,
+      "object_count": 1201,
+      "name": "Medkit"
+    },
+    {
+      "index": 29,
+      "name_idx": 41943,
+      "name_num": 0,
+      "object_base": 110027,
+      "object_count": 4970,
+      "note": "likely Sold_Anims per earlier hypothesis (count matches doc's cited 4970)",
+      "name": "Sold_Anims"
+    },
+    {
+      "index": 30,
+      "name_idx": 36787,
+      "name_num": 0,
+      "object_base": 114997,
+      "object_count": 183,
+      "name": "Mod_Grenade"
+    },
+    {
+      "index": 31,
+      "name_idx": 37447,
+      "name_num": 0,
+      "object_base": 115180,
+      "object_count": 1266,
+      "name": "NMEWeap_obran"
+    },
+    {
+      "index": 32,
+      "name_idx": 45180,
+      "name_num": 0,
+      "object_base": 116446,
+      "object_count": 675,
+      "name": "USWeap_AR15"
+    },
+    {
+      "index": 33,
+      "name_idx": 45232,
+      "name_num": 0,
+      "object_base": 117121,
+      "object_count": 213,
+      "name": "USWeap_grenades"
+    },
+    {
+      "index": 34,
+      "name_idx": 45244,
+      "name_num": 0,
+      "object_base": 117334,
+      "object_count": 335,
+      "name": "USWeap_m249"
+    },
+    {
+      "index": 35,
+      "name_idx": 30615,
+      "name_num": 0,
+      "object_base": 117669,
+      "object_count": 430,
+      "name": "Doors_01"
+    },
+    {
+      "index": 36,
+      "name_idx": 39935,
+      "name_num": 0,
+      "object_base": 118099,
+      "object_count": 8,
+      "name": "S_AudioFX"
+    },
+    {
+      "index": 37,
+      "name_idx": 29573,
+      "name_num": 0,
+      "object_base": 118107,
+      "object_count": 1440,
+      "name": "Decals_01"
+    },
+    {
+      "index": 38,
+      "name_idx": 32389,
+      "name_num": 0,
+      "object_base": 119547,
+      "object_count": 20095,
+      "name": "fX"
+    },
+    {
+      "index": 39,
+      "name_idx": 42093,
+      "name_num": 0,
+      "object_base": 139642,
+      "object_count": 1889,
+      "name": "Sold_Head"
+    },
+    {
+      "index": 40,
+      "name_idx": 23764,
+      "name_num": 0,
+      "object_base": 141531,
+      "object_count": 5,
+      "name": "AA_InGame_Mission_UI"
+    },
+    {
+      "index": 41,
+      "name_idx": 23775,
+      "name_num": 0,
+      "object_base": 141536,
+      "object_count": 24,
+      "name": "AA_InGame_UI"
+    },
+    {
+      "index": 42,
+      "name_idx": 23784,
+      "name_num": 0,
+      "object_base": 141560,
+      "object_count": 11,
+      "name": "AA_InGameACP_UI"
+    },
+    {
+      "index": 43,
+      "name_idx": 23829,
+      "name_num": 0,
+      "object_base": 141571,
+      "object_count": 3,
+      "name": "AA_LeaderBoard"
+    },
+    {
+      "index": 44,
+      "name_idx": 23852,
+      "name_num": 0,
+      "object_base": 141574,
+      "object_count": 30,
+      "name": "AA_Main_UI"
+    },
+    {
+      "index": 45,
+      "name_idx": 23853,
+      "name_num": 0,
+      "object_base": 141604,
+      "object_count": 5,
+      "name": "AA_Main_UI_MBS"
+    },
+    {
+      "index": 46,
+      "name_idx": 23991,
+      "name_num": 0,
+      "object_base": 141609,
+      "object_count": 17,
+      "name": "AA_OutOfGameUI"
+    },
+    {
+      "index": 47,
+      "name_idx": 24033,
+      "name_num": 0,
+      "object_base": 141626,
+      "object_count": 3,
+      "name": "AA_PNB"
+    },
+    {
+      "index": 48,
+      "name_idx": 24061,
+      "name_num": 0,
+      "object_base": 141629,
+      "object_count": 4,
+      "name": "AA_Scaleform_Auth_UI"
+    },
+    {
+      "index": 49,
+      "name_idx": 24062,
+      "name_num": 0,
+      "object_base": 141633,
+      "object_count": 4,
+      "name": "AA_Scaleform_TC"
+    },
+    {
+      "index": 50,
+      "name_idx": 24252,
+      "name_num": 0,
+      "object_base": 141637,
+      "object_count": 14,
+      "name": "AA_Training_UI"
+    },
+    {
+      "index": 51,
+      "name_idx": 25909,
+      "name_num": 0,
+      "object_base": 141651,
+      "object_count": 160,
+      "name": "ARGH"
+    },
+    {
+      "index": 52,
+      "name_idx": 43874,
+      "name_num": 0,
+      "object_base": 141811,
+      "object_count": 1,
+      "name": "TestSAI"
+    },
+    {
+      "index": 53,
+      "name_idx": 23835,
+      "name_num": 0,
+      "object_base": 141812,
+      "object_count": 25,
+      "name": "AA_LensFlare"
+    },
+    {
+      "index": 54,
+      "name_idx": 23981,
+      "name_num": 0,
+      "object_base": 141837,
+      "object_count": 76,
+      "name": "AA_NPCTools"
+    },
+    {
+      "index": 55,
+      "name_idx": 28708,
+      "name_num": 0,
+      "object_base": 141913,
+      "object_count": 154,
+      "name": "Civ_Legs"
+    },
+    {
+      "index": 56,
+      "name_idx": 28716,
+      "name_num": 0,
+      "object_base": 142067,
+      "object_count": 109,
+      "name": "Civ_Torso"
+    },
+    {
+      "index": 57,
+      "name_idx": 30913,
+      "name_num": 0,
+      "object_base": 142176,
+      "object_count": 1183,
+      "name": "Electronics_01"
+    },
+    {
+      "index": 58,
+      "name_idx": 31020,
+      "name_num": 0,
+      "object_base": 143359,
+      "object_count": 1427,
+      "name": "Engine_MI_Shaders"
+    },
+    {
+      "index": 59,
+      "name_idx": 31087,
+      "name_num": 0,
+      "object_base": 144786,
+      "object_count": 242,
+      "name": "ES2_Objects"
+    },
+    {
+      "index": 60,
+      "name_idx": 34918,
+      "name_num": 0,
+      "object_base": 145028,
+      "object_count": 117,
+      "name": "Island_Assets"
+    },
+    {
+      "index": 61,
+      "name_idx": 36732,
+      "name_num": 0,
+      "object_base": 145145,
+      "object_count": 141,
+      "name": "Mod_Ammo"
+    },
+    {
+      "index": 62,
+      "name_idx": 36798,
+      "name_num": 0,
+      "object_base": 145286,
+      "object_count": 12,
+      "name": "Mod_Lights"
+    },
+    {
+      "index": 63,
+      "name_idx": 36806,
+      "name_num": 0,
+      "object_base": 145298,
+      "object_count": 311,
+      "name": "Mod_Sights"
+    },
+    {
+      "index": 64,
+      "name_idx": 36851,
+      "name_num": 0,
+      "object_base": 145609,
+      "object_count": 66,
+      "name": "Mod_Stocks"
+    },
+    {
+      "index": 65,
+      "name_idx": 37018,
+      "name_num": 0,
+      "object_base": 145675,
+      "object_count": 175,
+      "name": "MT_Common"
+    },
+    {
+      "index": 66,
+      "name_idx": 37027,
+      "name_num": 0,
+      "object_base": 145850,
+      "object_count": 203,
+      "name": "mt_prop"
+    },
+    {
+      "index": 67,
+      "name_idx": 37404,
+      "name_num": 0,
+      "object_base": 146053,
+      "object_count": 96,
+      "name": "NMEWeap_Comp"
+    },
+    {
+      "index": 68,
+      "name_idx": 37432,
+      "name_num": 0,
+      "object_base": 146149,
+      "object_count": 39,
+      "name": "NMEWeap_grenades"
+    },
+    {
+      "index": 69,
+      "name_idx": 41957,
+      "name_num": 0,
+      "object_base": 146188,
+      "object_count": 145,
+      "name": "Sold_Arms"
+    },
+    {
+      "index": 70,
+      "name_idx": 41984,
+      "name_num": 0,
+      "object_base": 146333,
+      "object_count": 45,
+      "name": "Sold_Comp"
+    },
+    {
+      "index": 71,
+      "name_idx": 42007,
+      "name_num": 0,
+      "object_base": 146378,
+      "object_count": 28,
+      "name": "Sold_Equipment"
+    },
+    {
+      "index": 72,
+      "name_idx": 42014,
+      "name_num": 0,
+      "object_base": 146406,
+      "object_count": 87,
+      "name": "Sold_Eyewear"
+    },
+    {
+      "index": 73,
+      "name_idx": 42039,
+      "name_num": 0,
+      "object_base": 146493,
+      "object_count": 159,
+      "name": "Sold_Feet"
+    },
+    {
+      "index": 74,
+      "name_idx": 42090,
+      "name_num": 0,
+      "object_base": 146652,
+      "object_count": 104,
+      "name": "Sold_Hands"
+    },
+    {
+      "index": 75,
+      "name_idx": 42258,
+      "name_num": 0,
+      "object_base": 146756,
+      "object_count": 368,
+      "name": "Sold_HeadGear_Mat"
+    },
+    {
+      "index": 76,
+      "name_idx": 42259,
+      "name_num": 0,
+      "object_base": 147124,
+      "object_count": 302,
+      "name": "Sold_Legs"
+    },
+    {
+      "index": 77,
+      "name_idx": 42286,
+      "name_num": 0,
+      "object_base": 147426,
+      "object_count": 368,
+      "name": "Sold_Packs"
+    },
+    {
+      "index": 78,
+      "name_idx": 42386,
+      "name_num": 0,
+      "object_base": 147794,
+      "object_count": 443,
+      "name": "Sold_Torso"
+    },
+    {
+      "index": 79,
+      "name_idx": 43282,
+      "name_num": 0,
+      "object_base": 148237,
+      "object_count": 895,
+      "name": "Storage_01"
+    },
+    {
+      "index": 80,
+      "name_idx": 43402,
+      "name_num": 0,
+      "object_base": 149132,
+      "object_count": 210,
+      "name": "SurfMetal_01"
+    },
+    {
+      "index": 81,
+      "name_idx": 44252,
+      "name_num": 0,
+      "object_base": 149342,
+      "object_count": 2271,
+      "name": "Training_01"
+    },
+    {
+      "index": 82,
+      "name_idx": 45208,
+      "name_num": 0,
+      "object_base": 151613,
+      "object_count": 83,
+      "name": "USWeap_Comp"
+    },
+    {
+      "index": 83,
+      "name_idx": 25886,
+      "name_num": 0,
+      "object_base": 151696,
+      "object_count": 461,
+      "name": "ARCDecoration"
+    },
+    {
+      "index": 84,
+      "name_idx": 23955,
+      "name_num": 0,
+      "object_base": 152157,
+      "object_count": 924,
+      "name": "AA_MPNPC_Voice"
+    },
+    {
+      "index": 85,
+      "name_idx": 25507,
+      "name_num": 0,
+      "object_base": 153081,
+      "object_count": 3137,
+      "name": "AGP_UI"
+    },
+    {
+      "index": 86,
+      "name_idx": 29341,
+      "name_num": 0,
+      "object_base": 156218,
+      "object_count": 109,
+      "name": "CubeMaps_01"
+    },
+    {
+      "index": 87,
+      "name_idx": 30390,
+      "name_num": 0,
+      "object_base": 156327,
+      "object_count": 91,
+      "name": "Detail_01"
+    },
+    {
+      "index": 88,
+      "name_idx": 32375,
+      "name_num": 0,
+      "object_base": 156418,
+      "object_count": 1199,
+      "name": "Furniture_01"
+    },
+    {
+      "index": 89,
+      "name_idx": 36465,
+      "name_num": 0,
+      "object_base": 157617,
+      "object_count": 17,
+      "name": "MCEditorResources"
+    },
+    {
+      "index": 90,
+      "name_idx": 37019,
+      "name_num": 0,
+      "object_base": 157634,
+      "object_count": 16,
+      "name": "MT_CommonBasic"
+    },
+    {
+      "index": 91,
+      "name_idx": 37020,
+      "name_num": 0,
+      "object_base": 157650,
+      "object_count": 28,
+      "name": "mt_commontx"
+    },
+    {
+      "index": 92,
+      "name_idx": 39923,
+      "name_num": 0,
+      "object_base": 157678,
+      "object_count": 1472,
+      "name": "S_Amb_NonLoop"
+    },
+    {
+      "index": 93,
+      "name_idx": 39942,
+      "name_num": 0,
+      "object_base": 159150,
+      "object_count": 973,
+      "name": "S_Char_Foley_Footsteps"
+    },
+    {
+      "index": 94,
+      "name_idx": 40031,
+      "name_num": 0,
+      "object_base": 160123,
+      "object_count": 109,
+      "name": "S_Char_Foley_Health"
+    },
+    {
+      "index": 95,
+      "name_idx": 40058,
+      "name_num": 0,
+      "object_base": 160232,
+      "object_count": 1476,
+      "name": "S_Char_Foley_Movement"
+    },
+    {
+      "index": 96,
+      "name_idx": 40164,
+      "name_num": 0,
+      "object_base": 161708,
+      "object_count": 2342,
+      "name": "S_Char_VO_Soldier"
+    },
+    {
+      "index": 97,
+      "name_idx": 40173,
+      "name_num": 0,
+      "object_base": 164050,
+      "object_count": 29,
+      "name": "S_ES2"
+    },
+    {
+      "index": 98,
+      "name_idx": 40176,
+      "name_num": 0,
+      "object_base": 164079,
+      "object_count": 56,
+      "name": "S_HolidayAudio"
+    },
+    {
+      "index": 99,
+      "name_idx": 40177,
+      "name_num": 0,
+      "object_base": 164135,
+      "object_count": 70,
+      "name": "S_Map_Airfield"
+    },
+    {
+      "index": 100,
+      "name_idx": 40179,
+      "name_num": 0,
+      "object_base": 164205,
+      "object_count": 51,
+      "name": "S_Music"
+    },
+    {
+      "index": 101,
+      "name_idx": 40195,
+      "name_num": 0,
+      "object_base": 164256,
+      "object_count": 9,
+      "name": "S_UI"
+    },
+    {
+      "index": 102,
+      "name_idx": 40204,
+      "name_num": 0,
+      "object_base": 164265,
+      "object_count": 492,
+      "name": "S_Weap_Bullet"
+    },
+    {
+      "index": 103,
+      "name_idx": 40308,
+      "name_num": 0,
+      "object_base": 164757,
+      "object_count": 255,
+      "name": "S_Weap_Grenades"
+    },
+    {
+      "index": 104,
+      "name_idx": 40357,
+      "name_num": 0,
+      "object_base": 165012,
+      "object_count": 321,
+      "name": "S_Weap_MG"
+    },
+    {
+      "index": 105,
+      "name_idx": 40445,
+      "name_num": 0,
+      "object_base": 165333,
+      "object_count": 466,
+      "name": "S_Weap_Rifles"
+    },
+    {
+      "index": 106,
+      "name_idx": 41955,
+      "name_num": 0,
+      "object_base": 165799,
+      "object_count": 9,
+      "name": "Sold_Armor"
+    },
+    {
+      "index": 107,
+      "name_idx": 43407,
+      "name_num": 0,
+      "object_base": 165808,
+      "object_count": 147,
+      "name": "SurfTerrain_01"
+    },
+    {
+      "index": 108,
+      "name_idx": 45266,
+      "name_num": 0,
+      "object_base": 165955,
+      "object_count": 11,
+      "name": "USWeap_m67"
+    },
+    {
+      "index": 109,
+      "name_idx": 45812,
+      "name_num": 0,
+      "object_base": 165966,
+      "object_count": 177,
+      "name": "Windows_01"
+    },
+    {
+      "index": 110,
+      "name_idx": 25508,
+      "name_num": 0,
+      "object_base": 166143,
+      "object_count": 4900,
+      "name": "AGP_UI_MP_InGame"
+    },
+    {
+      "index": 111,
+      "name_idx": 30792,
+      "name_num": 0,
+      "object_base": 171043,
+      "object_count": 28,
+      "name": "Editor_AISupportIcons"
+    },
+    {
+      "index": 112,
+      "name_idx": 41737,
+      "name_num": 0,
+      "object_base": 171071,
+      "object_count": 222,
+      "name": "Sky_01"
+    },
+    {
+      "index": 113,
+      "name_idx": 45972,
+      "name_num": 0,
+      "object_base": 171293,
+      "object_count": 9,
+      "name": "ZOMBIE_Glass"
+    },
+    {
+      "index": 114,
+      "name_idx": 5737,
+      "name_num": 0,
+      "object_base": 171302,
+      "object_count": 2132,
+      "name": "AA3Game",
+      "note": "Package name resolved 2026-07-24: 'AA3Game' -- this is what Ch=2 (ObjectIndex=172588) in the legit pcap actually belongs to (local NetIndex=172588-171302=1286 within this package), NOT WorldInfo/Bridge_night_clear as previously hypothesized. Exact class at that NetIndex not yet identified."
+    },
+    {
+      "index": 115,
+      "name_idx": 47717,
+      "name_num": 0,
+      "object_base": 173434,
+      "object_count": 583,
+      "name": "ZHudTest"
+    },
+    {
+      "index": 116,
+      "name_idx": 46802,
+      "name_num": 0,
+      "object_base": 174017,
+      "object_count": 583,
+      "name": "Leavenworth_01"
+    },
+    {
+      "index": 117,
+      "name_idx": 47130,
+      "name_num": 0,
+      "object_base": 174600,
+      "object_count": 1995,
+      "name": "S_VoiceShouts"
+    },
+    {
+      "index": 118,
+      "name_idx": 47746,
+      "name_num": 0,
+      "object_base": 176595,
+      "object_count": 497,
+      "name": "DefaultUISkin"
+    },
+    {
+      "index": 119,
+      "name_idx": 20282,
+      "name_num": 0,
+      "object_base": 177092,
+      "object_count": 1,
+      "name": "SoundModes"
+    },
+    {
+      "index": 120,
+      "name_idx": 47748,
+      "name_num": 0,
+      "object_base": 177093,
+      "object_count": 1,
+      "name": "EngineSounds"
+    },
+    {
+      "index": 121,
+      "name_idx": 47814,
+      "name_num": 0,
+      "object_base": 177094,
+      "object_count": 5,
+      "name": "AA_PPE"
+    },
+    {
+      "index": 122,
+      "name_idx": 48183,
+      "name_num": 0,
+      "object_base": 177099,
+      "object_count": 1477,
+      "name": "Vehicles_01"
+    },
+    {
+      "index": 123,
+      "name_idx": 47903,
+      "name_num": 0,
+      "object_base": 178576,
+      "object_count": 15065,
+      "note": "Confirmed via live FName resolution: name='Bridge_night_clear', matches prior identification.",
+      "name": "Bridge_night_clear"
+    },
+    {
+      "index": 124,
+      "name_idx": 47964,
+      "name_num": 0,
+      "object_base": 193641,
+      "object_count": 209,
+      "name": "Graffiti_01"
+    },
+    {
+      "index": 125,
+      "name_idx": 47831,
+      "name_num": 0,
+      "object_base": 193850,
+      "object_count": 827,
+      "name": "Accessories_01"
+    },
+    {
+      "index": 126,
+      "name_idx": 47856,
+      "name_num": 0,
+      "object_base": 194677,
+      "object_count": 1756,
+      "name": "architectureczer_01"
+    },
+    {
+      "index": 127,
+      "name_idx": 47858,
+      "name_num": 0,
+      "object_base": 196433,
+      "object_count": 3662,
+      "name": "ArchitectureNEUT_01"
+    },
+    {
+      "index": 128,
+      "name_idx": 47860,
+      "name_num": 0,
+      "object_base": 200095,
+      "object_count": 572,
+      "name": "ARCStructures"
+    },
+    {
+      "index": 129,
+      "name_idx": 47907,
+      "name_num": 0,
+      "object_base": 200667,
+      "object_count": 188,
+      "name": "Buildings_01"
+    },
+    {
+      "index": 130,
+      "name_idx": 47940,
+      "name_num": 0,
+      "object_base": 200855,
+      "object_count": 67,
+      "name": "DCRDebris"
+    },
+    {
+      "index": 131,
+      "name_idx": 47941,
+      "name_num": 0,
+      "object_base": 200922,
+      "object_count": 100,
+      "name": "DCRFoliage"
+    },
+    {
+      "index": 132,
+      "name_idx": 47955,
+      "name_num": 0,
+      "object_base": 201022,
+      "object_count": 595,
+      "name": "EngineVolumetrics"
+    },
+    {
+      "index": 133,
+      "name_idx": 47961,
+      "name_num": 0,
+      "object_base": 201617,
+      "object_count": 2333,
+      "name": "Foliage_01"
+    },
+    {
+      "index": 134,
+      "name_idx": 48002,
+      "name_num": 0,
+      "object_base": 203950,
+      "object_count": 268,
+      "name": "machinery_01"
+    },
+    {
+      "index": 135,
+      "name_idx": 48013,
+      "name_num": 0,
+      "object_base": 204218,
+      "object_count": 219,
+      "name": "MT_Architecture"
+    },
+    {
+      "index": 136,
+      "name_idx": 48014,
+      "name_num": 0,
+      "object_base": 204437,
+      "object_count": 430,
+      "name": "mt_base"
+    },
+    {
+      "index": 137,
+      "name_idx": 48033,
+      "name_num": 0,
+      "object_base": 204867,
+      "object_count": 435,
+      "name": "Plumbing_01"
+    },
+    {
+      "index": 138,
+      "name_idx": 48117,
+      "name_num": 0,
+      "object_base": 205302,
+      "object_count": 120,
+      "name": "SurfBrick_02"
+    },
+    {
+      "index": 139,
+      "name_idx": 48118,
+      "name_num": 0,
+      "object_base": 205422,
+      "object_count": 87,
+      "name": "SurfConcrete_01"
+    },
+    {
+      "index": 140,
+      "name_idx": 48119,
+      "name_num": 0,
+      "object_base": 205509,
+      "object_count": 35,
+      "name": "SurfConcrete_02"
+    },
+    {
+      "index": 141,
+      "name_idx": 48120,
+      "name_num": 0,
+      "object_base": 205544,
+      "object_count": 74,
+      "name": "SurfConcrete_03"
+    },
+    {
+      "index": 142,
+      "name_idx": 48123,
+      "name_num": 0,
+      "object_base": 205618,
+      "object_count": 245,
+      "name": "SurfConcrete_06"
+    },
+    {
+      "index": 143,
+      "name_idx": 48125,
+      "name_num": 0,
+      "object_base": 205863,
+      "object_count": 136,
+      "name": "SurfGlass_01"
+    },
+    {
+      "index": 144,
+      "name_idx": 48131,
+      "name_num": 0,
+      "object_base": 205999,
+      "object_count": 154,
+      "name": "SurfPlaster_01"
+    },
+    {
+      "index": 145,
+      "name_idx": 48132,
+      "name_num": 0,
+      "object_base": 206153,
+      "object_count": 54,
+      "name": "SurfPlaster_02"
+    },
+    {
+      "index": 146,
+      "name_idx": 48139,
+      "name_num": 0,
+      "object_base": 206207,
+      "object_count": 192,
+      "name": "SurfTile_03"
+    },
+    {
+      "index": 147,
+      "name_idx": 48141,
+      "name_num": 0,
+      "object_base": 206399,
+      "object_count": 285,
+      "name": "SurfWood_01"
+    },
+    {
+      "index": 148,
+      "name_idx": 48156,
+      "name_num": 0,
+      "object_base": 206684,
+      "object_count": 1607,
+      "name": "SYSDecoration"
+    },
+    {
+      "index": 149,
+      "name_idx": 48184,
+      "name_num": 0,
+      "object_base": 208291,
+      "object_count": 480,
+      "name": "Vehicles_02"
+    },
+    {
+      "index": 150,
+      "name_idx": 47922,
+      "name_num": 0,
+      "object_base": 208771,
+      "object_count": 86,
+      "name": "CVRLarge"
+    },
+    {
+      "index": 151,
+      "name_idx": 47923,
+      "name_num": 0,
+      "object_base": 208857,
+      "object_count": 42,
+      "name": "CVRSmall"
+    },
+    {
+      "index": 152,
+      "name_idx": 47942,
+      "name_num": 0,
+      "object_base": 208899,
+      "object_count": 93,
+      "name": "DCRFurniture"
+    },
+    {
+      "index": 153,
+      "name_idx": 47944,
+      "name_num": 0,
+      "object_base": 208992,
+      "object_count": 275,
+      "name": "DCRLights"
+    },
+    {
+      "index": 154,
+      "name_idx": 47945,
+      "name_num": 0,
+      "object_base": 209267,
+      "object_count": 27,
+      "name": "DCRMasonry"
+    },
+    {
+      "index": 155,
+      "name_idx": 48151,
+      "name_num": 0,
+      "object_base": 209294,
+      "object_count": 60,
+      "name": "SYS_Sidewalks"
+    },
+    {
+      "index": 156,
+      "name_idx": 48157,
+      "name_num": 0,
+      "object_base": 209354,
+      "object_count": 348,
+      "name": "SYSExterior"
+    },
+    {
+      "index": 157,
+      "name_idx": 48158,
+      "name_num": 0,
+      "object_base": 209702,
+      "object_count": 153,
+      "name": "SYSIndustrial"
+    },
+    {
+      "index": 158,
+      "name_idx": 48159,
+      "name_num": 0,
+      "object_base": 209855,
+      "object_count": 28,
+      "name": "SYSInteractive"
+    },
+    {
+      "index": 159,
+      "name_idx": 48195,
+      "name_num": 0,
+      "object_base": 209883,
+      "object_count": 39,
+      "name": "VH_T72"
+    },
+    {
+      "index": 160,
+      "name_idx": 47938,
+      "name_num": 0,
+      "object_base": 209922,
+      "object_count": 201,
+      "name": "DCR_Water"
+    },
+    {
+      "index": 161,
+      "name_idx": 47952,
+      "name_num": 0,
+      "object_base": 210123,
+      "object_count": 324,
+      "name": "DM_PipelineProjectors"
+    },
+    {
+      "index": 162,
+      "name_idx": 47963,
+      "name_num": 0,
+      "object_base": 210447,
+      "object_count": 331,
+      "name": "FX_Placeable"
+    },
+    {
+      "index": 163,
+      "name_idx": 48052,
+      "name_num": 0,
+      "object_base": 210778,
+      "object_count": 240,
+      "name": "S_Amb_Loop"
+    },
+    {
+      "index": 164,
+      "name_idx": 48129,
+      "name_num": 0,
+      "object_base": 211018,
+      "object_count": 31,
+      "name": "SurfGrass_04"
+    },
+    {
+      "index": 165,
+      "name_idx": 47906,
+      "name_num": 0,
+      "object_base": 211049,
+      "object_count": 56,
+      "name": "Bridge_Water"
+    },
+    {
+      "index": 166,
+      "name_idx": 47904,
+      "name_num": 0,
+      "object_base": 211105,
+      "object_count": 1084,
+      "name": "Bridge_pathing"
+    },
+    {
+      "index": 167,
+      "name_idx": 47899,
+      "name_num": 0,
+      "object_base": 212189,
+      "object_count": 745,
+      "name": "Bridge_inf_co_large_ai"
+    },
+    {
+      "index": 168,
+      "name_idx": 48051,
+      "name_num": 0,
+      "object_base": 212934,
+      "object_count": 726,
+      "name": "S_AIMissionAudio"
+    },
+    {
+      "index": 169,
+      "name_idx": 48058,
+      "name_num": 0,
+      "object_base": 213660,
+      "object_count": 72,
+      "name": "S_Map_Bridge"
+    },
+    {
+      "index": 170,
+      "name_idx": 47905,
+      "name_num": 0,
+      "object_base": 213732,
+      "object_count": 1186,
+      "name": "Bridge_Volumes"
+    }
+  ]
+}
