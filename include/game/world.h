@@ -13,7 +13,7 @@
 #include "game/round_actors.h"
 
 namespace aa3 {
-namespace engine { struct MapManifest; }
+namespace engine { struct MapManifest; class MapBundle; }
 namespace game {
 
 class World {
@@ -29,7 +29,8 @@ public:
     // client connects; false (and every index left 0) if the manifest
     // lacks net object counts -- regenerate it with aa3_build_manifests.
     bool BindPackageMap(const engine::MapManifest& manifest,
-                        const std::string& game_mode_level = "");
+                        const std::string& game_mode_level = "",
+                        const engine::MapBundle* bundle = nullptr);
 
     // Game mode (doc sec 27): the gametype sublevel the client streams in
     // (configured, or "<Base>_inf_classic_large_dev" like retail), all of
@@ -188,6 +189,7 @@ public:
                                             const std::string& configured);
 private:
     bool LoadRoundActors(const std::string& path);
+    bool LoadRoundActorsFromJson(const std::string& json);
     // Actor data files from extract_round_actors.py: each actor's fields plus
     // references kept as the retail channel they pointed at.
     struct ActorTemplate {
@@ -198,6 +200,8 @@ private:
     };
     bool ReadActorTemplates(const std::string& path, const char* what,
                             std::vector<ActorTemplate>& out);
+    bool ReadActorTemplatesFromJson(const std::string& json, const char* what,
+                                    std::vector<ActorTemplate>& out);
     std::vector<std::unique_ptr<ServerRoundActor>> Instantiate(
         const std::vector<ActorTemplate>& templates,
         const std::map<int64_t, const ServerActor*>& outside);
@@ -268,6 +272,7 @@ private:
                   const std::string& objective = "");
     void ResetLevel();
     bool LoadMissionRules(const std::string& path);
+    bool LoadMissionRulesFromJson(const std::string& json);
     struct ExtractionRule {
         int32_t team = 0;
         int32_t min_players = 1;

@@ -40,6 +40,7 @@ public:
 
     // CLI overrides applied before Initialize.
     void SetStandaloneOverride(bool standalone) { standalone_override_ = standalone; }
+    void SetMapOverride(const std::string& map_name) { map_override_ = map_name; }
 
     // Main loop
     void Run();
@@ -88,6 +89,7 @@ private:
 
     // -1 = unset (use INI), 0 = INI says steam, 1 = forced standalone via CLI.
     int standalone_override_ = -1;
+    std::string map_override_;
 
     double delta_time_;
     uint64_t tick_count_;

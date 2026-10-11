@@ -1,6 +1,7 @@
 #include <cmath>
 #include "game/world.h"
 #include "engine/map_manifest.h"
+#include "engine/map_bundle.h"
 #include "network/rep_layout_gen.h"
 #include "util/json.h"
 #include <fstream>
@@ -511,14 +512,10 @@ uint32_t World::RandomViewpointIndex() const {
     return ObjectIndex(map_name_, viewpoints_[static_cast<size_t>(std::rand()) % viewpoints_.size()]);
 }
 
-bool World::LoadMissionRules(const std::string& path) {
-    std::ifstream f(path);
-    if (!f) return false;
-    std::stringstream ss;
-    ss << f.rdbuf();
+bool World::LoadMissionRulesFromJson(const std::string& json) {
     std::string err;
-    auto doc = util::ParseJson(ss.str(), &err);
-    if (!doc) { LOG_ERROR("%s: %s", path.c_str(), err.c_str()); return false; }
+    auto doc = util::ParseJson(json, &err);
+    if (!doc) { LOG_ERROR("Bad mission rules JSON: %s", err.c_str()); return false; }
     extraction_rules_.clear();
     for (const auto& e : (*doc)["extraction"].arr) {
         ExtractionRule r;
@@ -537,9 +534,17 @@ bool World::LoadMissionRules(const std::string& path) {
     }
     viewpoints_.clear();
     for (const auto& v : (*doc)["viewpoints"].arr) viewpoints_.push_back(static_cast<uint32_t>(v.Int()));
-    LOG_INFO("Mission rules: %zu extraction objective(s), %zu viewpoints from %s",
-             extraction_rules_.size(), viewpoints_.size(), path.c_str());
+    LOG_INFO("Mission rules: %zu extraction objective(s), %zu viewpoints loaded",
+             extraction_rules_.size(), viewpoints_.size());
     return true;
+}
+
+bool World::LoadMissionRules(const std::string& path) {
+    std::ifstream f(path);
+    if (!f) return false;
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return LoadMissionRulesFromJson(ss.str());
 }
 
 void ServerRoundActor::Set(uint32_t idx, int32_t elem, const DataValue& v) {
@@ -606,20 +611,13 @@ uint32_t RoundClassMaxIndex(const std::string& cls) {
 
 }  // namespace
 
-bool World::ReadActorTemplates(const std::string& path, const char* what,
-                               std::vector<ActorTemplate>& out) {
+bool World::ReadActorTemplatesFromJson(const std::string& json, const char* what,
+                                       std::vector<ActorTemplate>& out) {
     out.clear();
-    std::ifstream f(path);
-    if (!f) {
-        LOG_WARN("No %s file %s", what, path.c_str());
-        return false;
-    }
-    std::stringstream ss;
-    ss << f.rdbuf();
     std::string err;
-    auto doc = util::ParseJson(ss.str(), &err);
+    auto doc = util::ParseJson(json, &err);
     if (!doc) {
-        LOG_ERROR("Bad %s file %s: %s", what, path.c_str(), err.c_str());
+        LOG_ERROR("Bad %s JSON: %s", what, err.c_str());
         return false;
     }
     for (const auto& ja : (*doc)["actors"].arr) {
@@ -660,6 +658,18 @@ bool World::ReadActorTemplates(const std::string& path, const char* what,
     return true;
 }
 
+bool World::ReadActorTemplates(const std::string& path, const char* what,
+                               std::vector<ActorTemplate>& out) {
+    std::ifstream f(path);
+    if (!f) {
+        LOG_WARN("No %s file %s", what, path.c_str());
+        return false;
+    }
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ReadActorTemplatesFromJson(ss.str(), what, out);
+}
+
 std::vector<std::unique_ptr<ServerRoundActor>> World::Instantiate(
         const std::vector<ActorTemplate>& templates,
         const std::map<int64_t, const ServerActor*>& outside) {
@@ -680,11 +690,11 @@ std::vector<std::unique_ptr<ServerRoundActor>> World::Instantiate(
     return made;
 }
 
-bool World::LoadRoundActors(const std::string& path) {
+bool World::LoadRoundActorsFromJson(const std::string& json) {
     round_actors_.clear();
     for (auto& t : role_slots_) t.clear();
     std::vector<ActorTemplate> templates;
-    if (!ReadActorTemplates(path, "round-actor", templates)) return false;
+    if (!ReadActorTemplatesFromJson(json, "round-actor", templates)) return false;
     // References between round actors (FireTeamInfo.aamcrriClassRoles);
     // anything else (retail's objective marker) goes out as None for now.
     round_actors_ = Instantiate(templates, {});
@@ -742,10 +752,18 @@ bool World::LoadRoundActors(const std::string& path) {
         team->SetRoundField(assault ? TI::bTeamAssaultNextRound : TI::bTeamDefendNextRound, -1,
                             DataValue::Bool(true));
     }
-    LOG_INFO("Round actors: %zu from %s; role slots: team 0 = %zu, team 1 = %zu",
-             round_actors_.size(), path.c_str(), role_slots_[0].size(), role_slots_[1].size());
+    LOG_INFO("Round actors: %zu; role slots: team 0 = %zu, team 1 = %zu",
+             round_actors_.size(), role_slots_[0].size(), role_slots_[1].size());
     ++round_serial_;
     return true;
+}
+
+bool World::LoadRoundActors(const std::string& path) {
+    std::ifstream f(path);
+    if (!f) return false;
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return LoadRoundActorsFromJson(ss.str());
 }
 
 void World::ReleaseRole(ServerPlayerReplicationInfo& pri) {
@@ -1775,7 +1793,8 @@ uint32_t World::HUDClassIndex() const {
 }
 
 bool World::BindPackageMap(const engine::MapManifest& manifest,
-                           const std::string& game_mode_level) {
+                           const std::string& game_mode_level,
+                           const engine::MapBundle* bundle) {
     auto baseline = manifest.ObjectBase("AA3Baseline");
     auto game = manifest.ObjectBase("AA3Game");
     if (!baseline || !game) {
@@ -1793,35 +1812,68 @@ bool World::BindPackageMap(const engine::MapManifest& manifest,
         gri_->object_index = BaselineIndex(net_index::kGRI);
         gri_->game_class_object_index = GameIndex(net_index::kGameInfoClass);
     }
-    ConfigureGameMode(manifest, game_mode_level);
-    if (!game_mode_level_.empty())
-        LoadRoundActors("config/maps/" + game_mode_level_ + ".round.json");
+    std::string effective_level = game_mode_level;
+    if (effective_level.empty() && bundle && !bundle->GameModeLevel().empty()) {
+        effective_level = bundle->GameModeLevel();
+    }
+    ConfigureGameMode(manifest, effective_level);
+    if (!game_mode_level_.empty()) {
+        std::string round_json;
+        if (bundle && bundle->GetActorJson(engine::SectionType::kRoundActors, round_json)) {
+            LoadRoundActorsFromJson(round_json);
+        } else {
+            LoadRoundActors("config/maps/" + game_mode_level_ + ".round.json");
+        }
+    }
     {
         std::vector<ActorTemplate> placed;
-        if (ReadActorTemplates("config/maps/" + manifest.url + ".map_actors.json", "map-actor", placed)) {
-            // Doors open with just DrawScale + ReplicatedMesh (live retail
-            // capture 2026-10-09). IncMatchReset/'Latched' only come with a
-            // later round's reset; sending them at join is not what retail does.
+        std::string map_act_json;
+        bool have_actors = false;
+        if (bundle && bundle->GetActorJson(engine::SectionType::kMapActors, map_act_json)) {
+            have_actors = ReadActorTemplatesFromJson(map_act_json, "map-actor", placed);
+        } else {
+            have_actors = ReadActorTemplates("config/maps/" + manifest.url + ".map_actors.json", "map-actor", placed);
+        }
+        if (have_actors) {
             map_actors_ = Instantiate(placed, {});
-            LOG_INFO("Map actors: %zu from config/maps/%s.map_actors.json", map_actors_.size(),
-                     manifest.url.c_str());
+            LOG_INFO("Map actors: %zu from %s", map_actors_.size(),
+                     bundle ? bundle->MapName().c_str() : manifest.url.c_str());
         }
     }
     if (!game_mode_level_.empty()) {
         std::vector<ActorTemplate> t;
-        if (ReadActorTemplates("config/maps/" + game_mode_level_ + ".join.json", "join-actor", t))
+        std::string act_json;
+        if (bundle && bundle->GetActorJson(engine::SectionType::kJoinActors, act_json)) {
+            if (ReadActorTemplatesFromJson(act_json, "join-actor", t))
+                join_actors_ = Instantiate(t, {});
+        } else if (ReadActorTemplates("config/maps/" + game_mode_level_ + ".join.json", "join-actor", t)) {
             join_actors_ = Instantiate(t, {});
-        if (ReadActorTemplates("config/maps/" + game_mode_level_ + ".match.json", "match-actor", t))
+        }
+
+        t.clear();
+        if (bundle && bundle->GetActorJson(engine::SectionType::kMatchActors, act_json)) {
+            if (ReadActorTemplatesFromJson(act_json, "match-actor", t))
+                match_actors_ = Instantiate(t, {});
+        } else if (ReadActorTemplates("config/maps/" + game_mode_level_ + ".match.json", "match-actor", t)) {
             match_actors_ = Instantiate(t, {});
+        }
         LOG_INFO("Mission actors: %zu at join, %zu at match start", join_actors_.size(),
                  match_actors_.size());
         match_actor_start_.clear();
         for (const auto& a : match_actors_) match_actor_start_.push_back(a->fields);
-        LoadMissionRules("config/maps/" + game_mode_level_ + ".rules.json");
+
+        std::string rules_json;
+        if (bundle && bundle->GetMissionRulesJson(rules_json)) {
+            LoadMissionRulesFromJson(rules_json);
+        } else {
+            LoadMissionRules("config/maps/" + game_mode_level_ + ".rules.json");
+        }
     }
     // Breakable windows: map NetIndex -> manager bit (export_windows.py).
     window_index_.clear();
-    {
+    if (bundle && bundle->GetWindows(window_index_)) {
+        LOG_INFO("Breakable windows: %zu from bundle", window_index_.size());
+    } else {
         std::ifstream wf("config/maps/" + manifest.url + ".windows.json");
         std::stringstream ws;
         ws << wf.rdbuf();
@@ -1830,11 +1882,22 @@ bool World::BindPackageMap(const engine::MapManifest& manifest,
                 window_index_[static_cast<uint32_t>(std::stoul(k))] = static_cast<int>(v.Int());
         LOG_INFO("Breakable windows: %zu", window_index_.size());
     }
-    // Map collision (doc sec 32): generated by aa3-tools/collision/export_collision.py.
-    collision_.Load("data/collision/" + manifest.url + ".col");
+    // Map collision (doc sec 32):
+    const uint8_t* col_ptr = nullptr;
+    size_t col_size = 0;
+    if (bundle && bundle->GetCollisionData(col_ptr, col_size)) {
+        collision_.LoadFromMemory(col_ptr, col_size, bundle->MapName());
+    } else {
+        collision_.Load("data/collision/" + manifest.url + ".col");
+    }
     // Every spawn gets retail's Fireteam Leader kit for now (doc sec 30).
-    if (ReadActorTemplates("config/spawn_inventory.json", "spawn-inventory", inventory_template_))
+    std::string inv_json;
+    if (bundle && bundle->GetActorJson(engine::SectionType::kSpawnInventory, inv_json)) {
+        if (ReadActorTemplatesFromJson(inv_json, "spawn-inventory", inventory_template_))
+            LOG_INFO("Spawn inventory: %zu actors per player from bundle", inventory_template_.size());
+    } else if (ReadActorTemplates("config/spawn_inventory.json", "spawn-inventory", inventory_template_)) {
         LOG_INFO("Spawn inventory: %zu actors per player", inventory_template_.size());
+    }
     for (auto& t : teams_) t.object_index = BaselineIndex(net_index::kTeamInfo);
     LOG_INFO("PackageMap: ObjectBase AA3Baseline=%u AA3Game=%u -> GRI=%u TeamInfo=%u "
              "PlayerController=%u", base_aa3baseline_, base_aa3game_,

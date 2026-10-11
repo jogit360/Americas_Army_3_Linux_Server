@@ -2,6 +2,7 @@
 #include <ctime>
 #include <filesystem>
 #include "engine/engine.h"
+#include "engine/map_bundle.h"
 #include "auth/steam_auth.h"
 #include "util/logging.h"
 #include <chrono>
@@ -77,6 +78,9 @@ bool Engine::Initialize(const std::string& config_path) {
 
     config_.server_name = GetConfigValue("ServerName", "AA3 Server");
     config_.map_name    = GetConfigValue("MapName",    "Compound");
+    if (!map_override_.empty()) {
+        config_.map_name = map_override_;
+    }
     config_.port        = static_cast<uint16_t>(GetConfigInt("Port",       8777));
     config_.query_port  = static_cast<uint16_t>(GetConfigInt("QueryPort",  27015));
     config_.max_players = GetConfigInt("MaxPlayers", 32);
@@ -98,11 +102,30 @@ bool Engine::Initialize(const std::string& config_path) {
     // Initialize world state with configured map
     world_.Initialize(config_.map_name);
 
-    // Load the manifest for the configured map. The protocol handler needs
-    // it to format the WELCOME+USES sequence on the control channel; if it
-    // can't be found, the server can still answer A2S queries but can't
-    // accept gameplay connections meaningfully.
-    {
+    // Try loading unified MapBundle first (data/maps/<map_name>.aa3map)
+    std::string bundle_path = GetConfigValue(
+        "MapBundlePath", "data/maps/" + config_.map_name + ".aa3map");
+    std::unique_ptr<engine::MapBundle> map_bundle;
+    if (std::filesystem::exists(bundle_path)) {
+        auto bundle = std::make_unique<engine::MapBundle>();
+        if (bundle->Load(bundle_path)) {
+            auto m = bundle->GetManifest();
+            if (m) {
+                map_manifest_ = std::move(*m);
+                map_bundle = std::move(bundle);
+                LOG_INFO("Using unified map bundle '%s'", bundle_path.c_str());
+            } else {
+                LOG_WARN("Map bundle '%s' has no manifest, falling back to loose files",
+                         bundle_path.c_str());
+            }
+        } else {
+            LOG_WARN("Failed to load map bundle '%s', falling back to loose files",
+                     bundle_path.c_str());
+        }
+    }
+
+    if (!map_manifest_) {
+        // Fall back to loose config/maps/<map>.aa3.manifest.json
         std::string manifest_path = GetConfigValue(
             "MapManifestPath",
             "config/maps/" + config_.map_name + ".aa3.manifest.json");
@@ -116,11 +139,6 @@ bool Engine::Initialize(const std::string& config_path) {
                 LOG_INFO("Loaded map manifest '%s' (%zu USES entries)",
                          manifest_path.c_str(), m->uses.size());
                 map_manifest_ = std::move(*m);
-                // Retail's USES also carry the gametype level's own content
-                // (BASEPKG=<level>: S_Music, ES2_Objects on Bridge classic) --
-                // without them the victory stingers and the ES2 objects'
-                // meshes have no ObjectIndex (doc sec 36). Appended, so every
-                // other package keeps its ObjectBase.
                 const std::string level = game::World::ResolveGameModeLevel(
                     *map_manifest_, GetConfigValue("GameModeLevel", ""));
                 std::ifstream lf("config/maps/" + level + ".aa3.manifest.json");
@@ -138,34 +156,40 @@ bool Engine::Initialize(const std::string& config_path) {
                         LOG_INFO("USES: +%zu package(s) of gametype level %s", added, level.c_str());
                     }
                 }
-                // GameModeLevel: the gametype sublevel the client streams in
-                // (doc sec 27). Empty = retail's "<Base>_inf_classic_large_dev".
-                if (!world_.BindPackageMap(*map_manifest_,
-                                           GetConfigValue("GameModeLevel", "")))
-                    return false;
-                // Round timers (retail 10s each) and spawn points (doc sec 29).
-                world_.SetRoundTimes(GetConfigInt("RoleSelectionTime", 0),
-                                     GetConfigInt("DeploymentTime", 0));
-        // Seconds before a killed player respawns (doc sec 33); 0 = not this round.
-        world_.SetRespawnDelay(std::atof(GetConfigValue("RespawnDelay", "0").c_str()));
-        world_.SetIncapBleeding(GetConfigValue("IncapBleeding", "true") != "false");
-        world_.SetTimeLimit(GetConfigInt("MissionTimeLimit", 0));
-                for (int t = 0; t < 2; ++t) {
-                    std::string sp = GetConfigValue("SpawnPoint" + std::to_string(t), "");
-                    float x, y, z; int yaw;
-                    if (!sp.empty() && std::sscanf(sp.c_str(), "%f,%f,%f,%d", &x, &y, &z, &yaw) == 4)
-                        world_.SetSpawnPoint(t, x, y, z, yaw);
-                }
             } else {
                 LOG_ERROR("Failed to parse %s: %s",
                           manifest_path.c_str(), mferr.c_str());
                 return false;
             }
         } else {
-            LOG_ERROR("Map manifest not found at %s. Run aa3_build_manifests "
-                      "with --cooked-root pointing at your AA3Game/CookedPC mirror.",
-                      manifest_path.c_str());
+            LOG_ERROR("Map manifest not found at %s nor map bundle at %s.",
+                      manifest_path.c_str(), bundle_path.c_str());
             return false;
+        }
+    }
+
+    // Initialize world with manifest and bundle
+    if (!world_.BindPackageMap(*map_manifest_,
+                               GetConfigValue("GameModeLevel", ""),
+                               map_bundle.get()))
+        return false;
+
+    // Round timers (retail 10s each) and spawn points (doc sec 29).
+    world_.SetRoundTimes(GetConfigInt("RoleSelectionTime", 0),
+                         GetConfigInt("DeploymentTime", 0));
+    world_.SetRespawnDelay(std::atof(GetConfigValue("RespawnDelay", "0").c_str()));
+    world_.SetIncapBleeding(GetConfigValue("IncapBleeding", "true") != "false");
+    world_.SetTimeLimit(GetConfigInt("MissionTimeLimit", 0));
+
+    for (int t = 0; t < 2; ++t) {
+        std::string sp = GetConfigValue("SpawnPoint" + std::to_string(t), "");
+        float x, y, z; int yaw;
+        if (!sp.empty() && std::sscanf(sp.c_str(), "%f,%f,%f,%d", &x, &y, &z, &yaw) == 4) {
+            world_.SetSpawnPoint(t, x, y, z, yaw);
+        } else if (map_bundle && map_bundle->GetSpawnPoint(t, x, y, z, yaw)) {
+            world_.SetSpawnPoint(t, x, y, z, yaw);
+            LOG_INFO("Team %d spawn point loaded from bundle: %.1f, %.1f, %.1f, %d",
+                     t, x, y, z, yaw);
         }
     }
 

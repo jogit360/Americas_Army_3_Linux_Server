@@ -27,6 +27,7 @@ set(SERVER_SOURCES
     src/engine/engine_config.cpp
     src/engine/package_reader.cpp
     src/engine/map_manifest.cpp
+    src/engine/map_bundle.cpp
     src/auth/steam_auth.cpp
     src/network/network_layer.cpp
     src/network/socket_manager.cpp
@@ -51,6 +52,7 @@ set(SERVER_HEADERS
     include/engine/engine.h
     include/engine/package_reader.h
     include/engine/map_manifest.h
+    include/engine/map_bundle.h
     include/auth/steam_auth.h
     include/network/network.h
     include/network/protocol_handler.h
@@ -122,6 +124,29 @@ target_link_libraries(aa3_build_manifests PRIVATE
 )
 install(TARGETS aa3_build_manifests DESTINATION bin)
 
+# Offline map bundler: packages all server map data into .aa3map bundles.
+add_executable(aa3_mapbake
+    tools/map_bake/main.cpp
+    src/engine/map_bundle.cpp
+    src/engine/map_manifest.cpp
+    src/engine/package_reader.cpp
+    src/engine/package_extractor.cpp
+    src/game/collision.cpp
+    src/util/crc.cpp
+    src/util/json.cpp
+    src/util/logging.cpp
+)
+target_include_directories(aa3_mapbake PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(aa3_mapbake PRIVATE
+    ${LZO2_LIBRARY}
+    OpenSSL::Crypto
+    pthread
+    dl
+)
+install(TARGETS aa3_mapbake DESTINATION bin)
+
 # Encoder round-trip check against the tool's --rep-layout output (see the
 # file header for how to produce the two layout files it takes).
 add_executable(rep_roundtrip_test
@@ -161,3 +186,58 @@ target_link_libraries(lan_beacon_test PRIVATE z)
 # Collision world check against retail player positions (doc sec 32).
 add_executable(collision_test tests/collision_test.cpp src/game/collision.cpp src/util/logging.cpp)
 target_include_directories(collision_test PRIVATE include)
+
+add_executable(collision_parity_test tests/collision_parity_test.cpp src/game/collision.cpp src/util/logging.cpp)
+target_include_directories(collision_parity_test PRIVATE include)
+
+add_executable(package_extractor_test
+    tests/package_extractor_test.cpp
+    src/engine/package_extractor.cpp
+    src/engine/package_reader.cpp
+    src/game/collision.cpp
+    src/util/logging.cpp
+)
+target_include_directories(package_extractor_test PRIVATE include)
+target_link_libraries(package_extractor_test PRIVATE ${LZO2_LIBRARY} z)
+
+add_executable(collision_quant_test
+    tests/collision_quant_test.cpp
+    src/engine/package_extractor.cpp
+    src/engine/package_reader.cpp
+    src/game/collision.cpp
+    src/util/logging.cpp
+)
+target_include_directories(collision_quant_test PRIVATE include)
+target_link_libraries(collision_quant_test PRIVATE ${LZO2_LIBRARY} z)
+
+add_executable(mission_extraction_test
+    tests/mission_extraction_test.cpp
+    src/engine/map_bundle.cpp
+    src/engine/map_manifest.cpp
+    src/engine/package_reader.cpp
+    src/engine/package_extractor.cpp
+    src/game/world.cpp
+    src/game/collision.cpp
+    src/game/player_manager.cpp
+    src/game/stats_export.cpp
+    src/game/game_loop.cpp
+    src/network/rpc_decode.cpp
+    src/network/rpc_encode.cpp
+    src/network/rep_encode.cpp
+    src/util/bits.cpp
+    src/util/crc.cpp
+    src/util/logging.cpp
+    src/util/json.cpp
+)
+target_include_directories(mission_extraction_test PRIVATE include ${STEAMWORKS_INCLUDE_DIR})
+target_link_libraries(mission_extraction_test PRIVATE ${LZO2_LIBRARY} z OpenSSL::Crypto pthread dl)
+
+enable_testing()
+add_test(NAME collision_parity_test COMMAND collision_parity_test)
+add_test(NAME package_extractor_test COMMAND package_extractor_test)
+add_test(NAME collision_quant_test COMMAND collision_quant_test)
+add_test(NAME mission_extraction_test COMMAND mission_extraction_test)
+set_tests_properties(collision_parity_test package_extractor_test collision_quant_test mission_extraction_test
+    PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+

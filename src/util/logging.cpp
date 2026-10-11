@@ -39,6 +39,10 @@ void LOG_MESSAGE(LogLevel level, const char* fmt, ...) {
     char time_str[32];
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", timeinfo);
 
+    if (!g_log_file) {
+        g_log_file = stdout;
+    }
+
     fprintf(g_log_file, "[%s] [%s] ", time_str, level_str);
 
     va_list args;

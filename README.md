@@ -31,7 +31,7 @@ browser. `--steam` (default) also advertises to the Steam master server.
 
 ## Project Status
 
-**Playable on Bridge (classic mode).** Last updated 2026-10-10.
+**Playable across all 18 retail maps** with zero dependencies on client packages. Last updated 2026-10-10.
 
 | Area | Status |
 |------|--------|
@@ -40,18 +40,22 @@ browser. `--steam` (default) also advertises to the Steam master server.
 | Actor replication: WorldInfo, GRI, TeamInfo, PRI, PC, Pawn, inventory, round actors | done |
 | Client RPC decoding (movement, posture, fire, reload, use...) | done (99.998% of retail bunches) |
 | LAN browser beacon (in-game server list + Join) | done |
-| Team join, role selection, deployment, spawn with per-role kits | done |
+| Team join, role selection, deployment, spawn with per-role kits | done (13 roles per team across all maps) |
 | Movement, stance, sprint, vault/mantle, ladders, hold breath | done |
-| Map collision (static meshes, terrain, BSP) + server-side bullet traces | done |
+| Map representation: Modernized Unified Map Bundles (`.aa3map`, `AA3MAP01`) | done (zero-copy mmap, all 18 maps baked, 195 MB total vs 1.2 GB) |
+| Map collision: Quantized instanced mesh collision (`AA3COL04`) + BVH bullet traces | done (16-bit vertices, packed uint16 indices, 100% ray parity) |
+| Mission & Gameplay data: native extraction of map actors, round roles, rules | done (no capture JSON dependencies) |
 | Weapons: fire modes, ammo, reloads; breakable windows; doors; ES2 objects | done |
 | Damage by hit zone, incapacitation (bleed-out, withdraw), death | done |
-| Round end: elimination, extraction, time limit; scoreboard; next round; 6-round match with side swap | done (bot-tested) |
-| Stats (server-authoritative, retail-exact encoding, JSON export + web viewer) | done; few counters fed yet |
+| Round end: elimination, extraction, time limit; scoreboard; next round; 6-round match | done (bot-tested) |
+| Multi-map CLI: `--map <name>` / `-m <name>` argument | done (supports all 18 retail maps) |
 | Medical treatment (healing a downed teammate) | **blocked**: client offers no treat option yet |
-| Dropped weapons, grenades, M320, TAH/VIP/other modes, map rotation | not started |
+| Dropped weapons, grenades, M320, TAH/VIP/other modes | not started |
 
 Full write-up, section by section with the retail evidence:
-`docs/AA3_ACTOR_REPLICATION.md` (sections 1-27, 36; 28-35 are only in commit messages so far).
+- [`docs/MAP_MODERNIZATION_SPEC.md`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/docs/MAP_MODERNIZATION_SPEC.md) (Unified Map Bundles, Quantized Collision, Mission Ingestion)
+- [`docs/AA3_ACTOR_REPLICATION.md`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/docs/AA3_ACTOR_REPLICATION.md) (Protocol and replication notes)
+
 
 ## Directory Structure
 

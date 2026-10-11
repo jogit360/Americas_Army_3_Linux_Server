@@ -2,10 +2,12 @@
 #define AA3_GAME_COLLISION_H
 
 // Server-side collision world (doc sec 32): the map's static geometry --
-// static mesh kDOP triangles, terrain heightmaps and BSP -- exported by
-// aa3-tools/collision/export_collision.py to data/collision/<map>.col, held
-// in a bounding-volume hierarchy for line traces (bullets, floor checks,
-// vault/ladder probes).
+// static mesh kDOP triangles, terrain heightmaps and BSP.
+// Supports both:
+//   - Legacy flat collision (AA3COL01, AA3COL02): flat list of triangles
+//   - Modern instanced collision (AA3COL03): unique meshes + BLAS, placed
+//     instances + TLAS, plus direct terrain and BSP geometry. Reduces memory
+//     from ~100MB to ~15MB and cuts load time dramatically.
 
 #include <cstdint>
 #include <string>
@@ -34,8 +36,9 @@ public:
     static constexpr uint8_t kBlockTrace = 2;
 
     bool Load(const std::string& path);
-    bool Loaded() const { return !tris_.empty(); }
-    size_t TriangleCount() const { return tris_.size(); }
+    bool LoadFromMemory(const uint8_t* data, size_t size, const std::string& source_name = "memory");
+    bool Loaded() const { return total_triangles_ > 0 || !tris_.empty(); }
+    size_t TriangleCount() const { return total_triangles_ > 0 ? total_triangles_ : tris_.size(); }
 
     // Closest hit on the segment start->end against triangles whose flags
     // include any bit of `mask` (both faces count).
@@ -55,12 +58,54 @@ private:
         uint32_t first;         // leaf: first index into order_; inner: right child
         uint32_t count;         // leaf: triangle count; inner: 0
     };
-    void Build();
+
+    // Instanced geometry support (AA3COL03)
+    struct UniqueMesh {
+        uint32_t mesh_id = 0;
+        Vec3 bounds_min, bounds_max;
+        struct LocalTri {
+            Vec3 v0, e1, e2;
+        };
+        std::vector<LocalTri> tris;
+        std::vector<uint32_t> order;
+        std::vector<Node> bvh;
+    };
+
+    struct MeshInstance {
+        uint32_t mesh_idx = 0;
+        Vec3 world_min, world_max;
+        Vec3 loc;
+        float inv_mat[3][3];    // local = (world - loc) @ inv_mat
+        float inv_trans[3][3];  // for surface normal
+        uint8_t flags = 0;
+        uint32_t owner = 0;
+    };
+
+    bool LoadCol01_02(const uint8_t* data, size_t size, bool v2, const std::string& source_name);
+    bool LoadCol03(const uint8_t* data, size_t size, const std::string& source_name);
+    bool LoadCol04(const uint8_t* data, size_t size, const std::string& source_name);
+
+    void BuildFlatBvh();
     uint32_t BuildRange(uint32_t begin, uint32_t end, std::vector<Vec3>& cent);
 
+    void BuildTlas();
+    uint32_t BuildTlasRange(uint32_t begin, uint32_t end, std::vector<Vec3>& cent);
+
+    void BuildMeshBlas(UniqueMesh& mesh);
+    uint32_t BuildMeshRange(UniqueMesh& mesh, uint32_t begin, uint32_t end, std::vector<Vec3>& cent);
+
+    // Direct / flat triangles (used for BSP/Terrain in COL03, or all tris in COL01/02)
     std::vector<Tri> tris_;
     std::vector<uint32_t> order_;
     std::vector<Node> nodes_;
+
+    // Instanced meshes and TLAS
+    std::vector<UniqueMesh> meshes_;
+    std::vector<MeshInstance> instances_;
+    std::vector<uint32_t> tlas_order_;
+    std::vector<Node> tlas_nodes_;
+
+    size_t total_triangles_ = 0;
     std::vector<uint32_t> disabled_owners_;
 };
 

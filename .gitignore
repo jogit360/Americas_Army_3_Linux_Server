@@ -25,6 +25,9 @@ Thumbs.db
 # Local-only config overrides
 config/aa3_server.local.ini
 
-# Collision worlds generated from the cooked maps by
-# aa3-tools/collision/export_collision.py (doc sec 32); large, not committed.
+# Collision worlds and unified map bundles generated from cooked maps.
 /data/collision/
+/data/maps/
+
+# Runtime stats export
+/stats/

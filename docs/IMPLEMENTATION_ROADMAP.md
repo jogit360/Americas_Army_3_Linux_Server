@@ -1,396 +1,171 @@
-# AA3 Linux Server - Complete Implementation Roadmap
+# America's Army 3 Linux Dedicated Server — Implementation Roadmap
 
-## Project Goals
-
-Create a fully functional Linux dedicated server for America's Army 3 with:
-- ✅ Steam-based authentication (Steamworks SDK)
-- ✅ No external authentication servers needed
-- ✅ No anti-cheat system (PunkBuster deprecated)
-- ✅ Server-authoritative gameplay
-- ✅ Multi-player support (up to 32 players)
-- ✅ Objective-based gameplay (TDM, Assault, Recon)
-
-## Phase 1: Steamworks SDK Integration (15-20 hours) ← CURRENT
-
-### Deliverables
-- ✅ CMake build system
-- ✅ Engine initialization and config system
-- ✅ SteamAuthManager (Steamworks SDK wrapper)
-- ✅ SocketManager (UDP socket layer)
-- ✅ Main game loop structure
-- ✅ Logging system
-- 🔄 Build instructions and testing framework
-
-### Key Files
-- `src/engine/engine_init.cpp` - Main engine loop
-- `src/engine/engine_config.cpp` - INI config parser
-- `src/auth/steam_auth.cpp` - Steamworks SDK integration
-- `src/network/socket_manager.cpp` - UDP network layer
-- `CMakeLists.txt` - Build system
-- `config/aa3_server.ini` - Server configuration
-
-### Estimated Time: 15-20 hours
-- Setup & documentation: 3-4 hrs
-- Steamworks SDK integration: 5-7 hrs
-- Config system implementation: 2-3 hrs
-- Socket layer foundation: 3-4 hrs
-- Testing & debugging: 2-3 hrs
-
-### Success Criteria
-- [ ] Server compiles without errors
-- [ ] Server initializes with Steamworks SDK
-- [ ] Server registers with Steam backend
-- [ ] Server accepts/rejects Steam authentication
-- [ ] Main loop runs at 60 Hz
-- [ ] Build can be automated with CMake
+**Document Version**: 2.0  
+**Last Updated**: 2026-10-10  
+**Overall Status**: ✅ Phases 1–5 Complete; Phase 6 (Gameplay Depth) Next
 
 ---
 
-## Phase 2: Network & Player Management (12-15 hours)
+## 1. Project Vision & Goals
 
-### Deliverables
-- Complete UDP socket implementation
-- Player connection/disconnection handling
-- Player state struct (position, rotation, health, etc.)
-- Network message serialization
-- Client packet handling
-- Server state broadcasting
+The goal of this project is to provide a modern, high-performance, headless Linux dedicated server (`aa3_server`) for America's Army 3, completely decoupled from legacy Windows dependencies and client-side cooked packages:
 
-### Key Files
-- `src/network/socket_manager.cpp` - Full UDP implementation
-- `src/game/player_manager.cpp` - Player lifecycle
-- `include/network/network.h` - Message structs
-- `include/game/game.h` - Game state
-
-### Estimated Time: 12-15 hours
-- UDP implementation: 4-5 hrs
-- Player management: 3-4 hrs
-- Network protocol: 3-4 hrs
-- Testing: 2-3 hrs
-
-### Success Criteria
-- [ ] Clients can connect and receive acknowledgment
-- [ ] Players are tracked with unique IDs
-- [ ] Player state updates are sent at 60 Hz
-- [ ] Clients can join/leave without server crash
-- [ ] Network bandwidth is optimized
+1. **Standalone Operation**: Zero requirement for proprietary 1.2+ GB client packages; all spatial, collision, and mission data is unified in modern `.aa3map` binary containers.
+2. **UE3 Protocol Fidelity**: Reverse-engineered Unreal Engine 3 (v568) bunch-based reliable channel multiplexing and binary bitstream packing.
+3. **Dual Authentication**: Seamless Steamworks SDK integration for authenticated public servers alongside `--standalone` mode for LAN and direct-IP communities.
+4. **Server-Authoritative Gameplay**: Authoritative movement, posture validation (stand, crouch, prone, sprint, vault, mantle, ladder), hitscan ballistics, skeletal hit registration, and round state machines.
+5. **High-Performance Spatial Collision**: Sub-millisecond BVH ray tracing against instanced, 16-bit quantized static meshes, terrain heightfields, and BSP geometry.
+6. **Full Map Roster Support**: All 18 retail AA3 base maps baked, tested, and playable via `--map <name>` CLI parameter.
 
 ---
 
-## Phase 3: Game Logic (20-25 hours)
+## 2. Milestone & Phase Breakdown
 
-### Deliverables
-- Spawn system (randomized positions per map)
-- Team assignment (US vs OPFOR)
-- Health & damage system
-- Weapon & ammunition tracking
-- Objective system (CTF, Recon, etc.)
-- Kill/death tracking
-- Match completion detection
-
-### Key Files
-- `src/game/game_loop.cpp` - Game tick logic
-- `src/game/player_manager.cpp` - Player state updates
-- `src/game/objective_manager.cpp` - Objective tracking
-- `src/game/damage_system.cpp` - Health/damage
-- `src/game/weapon_system.cpp` - Weapons/ammo
-
-### Estimated Time: 20-25 hours
-- Spawn & team system: 3-4 hrs
-- Health & damage: 3-4 hrs
-- Weapon & ammo: 3-4 hrs
-- Objectives: 5-7 hrs
-- Testing & balancing: 3-4 hrs
-
-### Success Criteria
-- [ ] Players spawn in correct team locations
-- [ ] Health/damage system works correctly
-- [ ] Objectives are tracked and completed
-- [ ] Kill/death/scoring works properly
-- [ ] Maps feel balanced and playable
-
----
-
-## Phase 4: Maps & Configuration (6-8 hours)
-
-### Deliverables
-- Spawn points for all maps
-- Map-specific configuration (boundaries, objectives)
-- Game rule configuration (friendly fire, respawn time, etc.)
-- Server preset configurations
-
-### Key Files
-- `config/maps/compound.json` - Map data
-- `config/maps/bridge.json`
-- `config/maps/pagoda.json`
-- `config/game_rules.ini`
-
-### Estimated Time: 6-8 hours
-- Map data extraction: 3-4 hrs
-- Configuration system: 2-3 hrs
-- Testing: 1-2 hrs
-
-### Success Criteria
-- [ ] All maps have proper spawn points
-- [ ] Map boundaries work correctly
-- [ ] Server configs are easily editable
-- [ ] Multiple game modes work per map
-
----
-
-## Phase 5: Client Integration (8-10 hours)
-
-### Deliverables
-- Client connection protocol
-- Packet format documentation
-- Client SDK (if providing) or documentation
-- Example client implementations
-
-### Key Files
-- `docs/NETWORK_PROTOCOL.md` - Network packet format
-- `docs/CLIENT_INTEGRATION.md` - How to connect clients
-- Tools for testing client connections
-
-### Estimated Time: 8-10 hours
-- Protocol documentation: 2-3 hrs
-- Testing with actual AA3 clients: 4-5 hrs
-- Client integration support: 2-3 hrs
-
-### Success Criteria
-- [ ] AA3 client can connect to server
-- [ ] Client receives player state updates
-- [ ] Client can spawn and move
-- [ ] Client can damage/kill other players
-- [ ] Objectives sync with clients
-
----
-
-## Phase 6: Performance & Optimization (4-6 hours)
-
-### Deliverables
-- Bandwidth optimization (message compression, delta encoding)
-- CPU optimization (tick rate tuning, culling)
-- Memory optimization (player state pooling)
-- Profiling and benchmark results
-
-### Estimated Time: 4-6 hours
-- Profiling: 1-2 hrs
-- Bandwidth optimization: 1-2 hrs
-- CPU optimization: 1-2 hrs
-
-### Success Criteria
-- [ ] Server supports 32+ concurrent players
-- [ ] Network bandwidth < 100 Mbps for 32 players
-- [ ] CPU usage < 50% on modern CPU
-- [ ] Latency < 100ms (game server to clients)
-
----
-
-## Phase 7: Admin & Management (3-5 hours)
-
-### Deliverables
-- Server admin commands (kick, ban, map change)
-- Server control interface (console/RPC)
-- Ban/whitelist system
-- Logging and statistics
-
-### Estimated Time: 3-5 hours
-
-### Success Criteria
-- [ ] Admins can manage players
-- [ ] Ban system prevents reconnection
-- [ ] Server logs all important events
-- [ ] Statistics are trackable
-
----
-
-## Phase 8: Deployment & Release (4-6 hours)
-
-### Deliverables
-- Systemd service file
-- Docker containerization (optional)
-- Installation documentation
-- Release build instructions
-- CI/CD pipeline (GitHub Actions)
-
-### Estimated Time: 4-6 hours
-
-### Success Criteria
-- [ ] Server can be installed with single command
-- [ ] Server auto-restarts on crash
-- [ ] Updates are automatic (via SteamCMD)
-- [ ] Docker image available (optional)
-
----
-
-## Total Project Timeline
-
-| Phase | Duration | Status |
-|-------|----------|--------|
-| Phase 1: Steamworks SDK | 15-20 hrs | 🔄 IN PROGRESS |
-| Phase 2: Network & Players | 12-15 hrs | ⏳ QUEUED |
-| Phase 3: Game Logic | 20-25 hrs | ⏳ QUEUED |
-| Phase 4: Maps & Config | 6-8 hrs | ⏳ QUEUED |
-| Phase 5: Client Integration | 8-10 hrs | ⏳ QUEUED |
-| Phase 6: Performance | 4-6 hrs | ⏳ QUEUED |
-| Phase 7: Admin & Management | 3-5 hrs | ⏳ QUEUED |
-| Phase 8: Deployment | 4-6 hrs | ⏳ QUEUED |
-| **TOTAL** | **72-95 hrs** | |
-
-### Timeline Estimate
-- **Optimistic**: 72 hours = 2 weeks at 40 hrs/week
-- **Realistic**: 85 hours = 2-3 weeks at 40 hrs/week
-- **Conservative**: 95 hours = 2.4 weeks at 40 hrs/week
-
----
-
-## Architecture Decision Summary
-
-### Authentication: Steamworks SDK ✅
-- **Rationale**: Replaces complex AA3 auth system with proven Steam infrastructure
-- **Benefits**: No external auth servers, automatic player bans, integrated friends list
-- **Cost**: Requires Steamworks SDK partnership (available for free to existing publishers)
-
-### Anti-Cheat: None (Optional VAC) ✅
-- **Rationale**: PunkBuster is obsolete; VAC adds complexity without guaranteed benefit
-- **Benefits**: Simpler codebase, easier to debug, server-authoritative validation sufficient
-- **Trade-off**: Players could theoretically cheat, but server-side validation prevents most exploits
-
-### Network Model: Server-Authoritative ✅
-- **Rationale**: Classic FPS design; server is source of truth
-- **Benefits**: Fair gameplay, anti-cheat friendly, consistent for all players
-- **Cost**: Higher bandwidth than client-side prediction, but manageable for 32 players
-
-### Timing: 60 Hz Game Loop ✅
-- **Rationale**: Standard for modern FPS games
-- **Benefits**: Smooth gameplay, good network synchronization
-- **Cost**: Higher CPU usage than lower tick rates
-
----
-
-## Key Technical Decisions
-
-### Database
-- **Decision**: None (No persistent player progression)
-- **Rationale**: AA3 is multiplayer-only, no character progression needed
-- **Future**: Could add for clan stats if needed
-
-### State Synchronization
-- **Decision**: Full state broadcast every tick
-- **Rationale**: Simplest implementation for 32 players
-- **Future**: Delta encoding for optimization
-
-### Physics
-- **Decision**: Client-side with server validation
-- **Rationale**: Better responsiveness for players
-- **Future**: Deterministic physics if anti-cheat becomes priority
-
----
-
-## Dependency Management
-
-### External Dependencies
-- **Steamworks SDK** (required)
-  - License: Partner agreement with Valve
-  - Status: Must be downloaded from partner.steamgames.com
-
-- **CMake** (build)
-  - License: BSD 3-Clause
-  - Status: System package, easily available
-
-- **Standard C++17 Library**
-  - License: Various (GCC/Clang)
-  - Status: Built-in to modern compilers
-
-### No Third-Party Game Engines
-- NOT using Unreal Engine (licensing complexity)
-- Building minimal custom engine from scratch
-- Focused on networking & game logic
-
----
-
-## Quality Assurance Strategy
-
-### Testing Phases
-1. **Unit Tests** - Individual component testing
-2. **Integration Tests** - Component interaction
-3. **System Tests** - Full server startup/shutdown
-4. **Load Tests** - 32+ concurrent players
-5. **Network Tests** - Latency, bandwidth, packet loss
-6. **Gameplay Tests** - All game modes on all maps
-
-### Debugging Tools
-- Logging system (DEBUG, INFO, WARN, ERROR)
-- Network packet dumper
-- Player state debugger
-- Performance profiler
-
----
-
-## Git Workflow
-
-### Commit Message Format
-```
-<type>: <component> - <brief description>
-
-Optional longer description explaining the change.
-
-Examples:
-- implement: steam_auth - ISteamGameServer initialization
-- feature: player_manager - spawn system
-- fix: socket_manager - handle UDP errors gracefully
-- test: network - UDP communication test
+```mermaid
+flowchart TD
+    P1["Phase 1: Engine Foundation & Steamworks"] --> P2["Phase 2: Network Protocol & Channels"]
+    P2 --> P3["Phase 3: Actor Replication & Game Logic"]
+    P3 --> P4["Phase 4: Map Modernization & Standalone Bundles"]
+    P4 --> P5["Phase 5: Multi-Map CLI & Standalone Runtime"]
+    P5 --> P6["Phase 6: Tactical Gameplay Depth (Medical & Inventory)"]
+    P6 --> P7["Phase 7: Administration, RCON & Telemetry"]
+    P7 --> P8["Phase 8: Production Deployment & Containerization"]
+    
+    style P1 fill:#d4edda,stroke:#28a745,stroke-width:2px;
+    style P2 fill:#d4edda,stroke:#28a745,stroke-width:2px;
+    style P3 fill:#d4edda,stroke:#28a745,stroke-width:2px;
+    style P4 fill:#d4edda,stroke:#28a745,stroke-width:2px;
+    style P5 fill:#d4edda,stroke:#28a745,stroke-width:2px;
+    style P6 fill:#fff3cd,stroke:#ffc107,stroke-width:2px;
+    style P7 fill:#e2e3e5,stroke:#6c757d,stroke-width:1px;
+    style P8 fill:#e2e3e5,stroke:#6c757d,stroke-width:1px;
 ```
 
-### Branch Strategy
-- `main` - Stable release candidate
-- `develop` - Integration branch for features
-- `feature/phase-X-*` - Individual feature branches
-- Tags: `v0.1-phase1`, `v0.2-phase2`, etc.
+---
+
+### Phase 1: Engine Foundation & Steamworks Integration ✅ COMPLETE
+
+- **CMake Build System**: Modular modern CMake build supporting C++17, sanitizer configs, and automated test harnesses.
+- **Engine Core & Tick Loop**: Configurable 60 Hz high-resolution main engine loop with delta-time clamping and accumulator stepping.
+- **Steamworks SDK Layer**: [`SteamAuthManager`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/include/auth/steam_auth.h) integrating `ISteamGameServer` authentication, Steam IDs, token validation, and ban callbacks.
+- **Standalone LAN Mode**: Fallback mode allowing server execution without Steamworks binaries or active internet access.
+- **Logging Subsystem**: Thread-safe tiered logging (`DEBUG`, `INFO`, `WARN`, `ERROR`) with millisecond timestamps and channel prefixes.
 
 ---
 
-## Future Enhancements
+### Phase 2: UE3 Network Handshake & Reliable Channels ✅ COMPLETE
 
-### Not in Scope (Phase 1-8)
-- [ ] Clan system
-- [ ] Persistent statistics
-- [ ] Mod support
-- [ ] Custom maps
-- [ ] Web console
-- [ ] Tournament features
-
-### Possible Future Phases
-- **Phase 9**: Web dashboard & server stats
-- **Phase 10**: Clan management system
-- **Phase 11**: Custom content support
-- **Phase 12**: Advanced anti-cheat integration
+- **UDP Socket Abstraction**: Non-blocking asynchronous socket wrapper managing MTU fragmentation, buffering, and packet sequencing.
+- **Channel 0 Handshake**: Full implementation of UE3 v568 connection handshake (`NMT_Hello`, `NMT_Challenge`, `NMT_Welcome`, and `NMT_NetGUIDs`).
+- **Reliable Bunches & Multiplexing**: Reliable bunch fragmentation, channel sequence numbering (`ChIndex`, `bOpen`, `bClose`, `bReliable`), packet acknowledgments, and resend queues.
+- **Network Byte Remapping**: Reverse-engineered opcode remap tables matching retail AA3 client expectations.
 
 ---
 
-## Continuation Notes
+### Phase 3: Actor Replication & Core Game Logic ✅ COMPLETE
 
-When returning to this project:
-
-1. **Check Phase Status**: Reference table above
-2. **Read Phase Guide**: e.g., `docs/PHASE2_IMPLEMENTATION_GUIDE.md`
-3. **Review Code**: Check latest implementation in `src/`
-4. **Update Roadmap**: Mark completed items with ✅
-5. **Commit Progress**: Use consistent commit message format
+- **Replication Layouts**: Dedicated replication property layouts (`RepLayout`) for `WorldInfo`, `GameReplicationInfo`, `TeamInfo`, `PlayerReplicationInfo`, `PlayerController`, `Pawn`, and inventory actors.
+- **Role & Loadout Ingestion**: 26-slot AA3 Infantry Combat Team hierarchy (Squad Leader + Alpha/Bravo/Charlie fireteams) with authentic weapon classes, magazines, and IFAK supplies.
+- **Movement & Posture Controller**: Client RPC handling for posture transitions (walk, sprint, crouch, prone, vault, mantle, ladder) and position validation.
+- **Hitscan Ballistics & Damage**: Ray-trace hitscan calculation, skeletal hitbox location mapping (head, torso, extremities), bleed rates, and incapacitation.
+- **Match State Machine**: Complete match and round lifecycle (`PreRound`, `RoundActive`, `RoundEnding`, `PostRound`) with win-condition evaluation (elimination vs objective completion).
 
 ---
 
-## Contact & Support
+### Phase 4: Map Modernization & Standalone Architecture ✅ COMPLETE
 
-For issues or questions:
-1. Check `docs/` for relevant documentation
-2. Review decompiled function reference in `/analysis/Critical/`
-3. Reference original architecture docs in `/analysis/`
-4. Check server logs for runtime errors
+Eliminated server dependence on 1.2+ GB of proprietary Unreal packages by developing a unified binary container pipeline:
+
+- **4.0 Unified Binary Container (`AA3MAP01`)**: Consolidated 7+ loose files into a single binary bundle with 64-byte aligned sections and zero-copy `mmap` loading (< 5 ms load time).
+- **4.1 Instanced BLAS/TLAS Acceleration (`AA3COL03`)**: Decoupled 517 unique static mesh collision hulls (BLAS) from 4,622 placed instances (TLAS), cutting raw Bridge collision from 69.18 MB to 19.49 MB with 100% ray-trace parity.
+- **4.2 Direct C++ Package Extractor**: Built native [`PackageExtractor`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/src/engine/package_extractor.cpp), reading UE3 v568 cooked packages directly in 58 ms without external scripts.
+- **4.3 16-Bit Quantized Mesh Compression (`AA3COL04`)**: Quantized vertex coordinates to unsigned 16-bit integers and packed triangle indices to `uint16_t`, cutting mesh geometry by 75.5% while maintaining sub-centimeter ray accuracy.
+- **4.4 Native Mission & Sublevel Extraction**: Ingested level actors, doors, breakable windows, interactive markers, and fireteam hierarchies directly from packages.
+- **4.5 Batch Retail Baking**: Baked all 18 base retail maps into `data/maps/*.aa3map`, occupying only 195 MB total (a 6.1x compression ratio vs original 1.2 GB cooked packages).
 
 ---
 
-**Document Version**: 1.0  
-**Last Updated**: 2026-05-03  
-**Status**: Active Development (Phase 1)
+### Phase 5: Multi-Map Standalone Execution & CLI Runtime ✅ COMPLETE
 
+- **Multi-Map CLI**: Added `--map <name>` / `-m <name>` argument enabling instant boot of any retail map from the catalog.
+- **Runtime Bundle Loader**: Integrated [`MapBundle`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/include/engine/map_bundle.h) directly into server initialization, seamlessly constructing BVH trees and round actors at launch.
+- **Automated Regression Suite**: 4 CTest test suites verifying collision parity, package extraction, quantized precision, and mission data with 100% pass rates.
+
+---
+
+### Phase 6: Gameplay Depth & Tactical Mechanics 🔄 IN PROGRESS / NEXT
+
+Building out advanced combat realism systems authentic to America's Army 3:
+
+- **Medical Treatment & Revive Sequence**:
+  - Interactive IFAK triage: apply tourniquet to limbs, apply pressure dressing to torso, administer saline for blood volume loss.
+  - Incapacitated state timers, bleed-out rates, and field resuscitation.
+- **Dropped Weapon & Inventory Pickups**:
+  - Spawning dropped weapon actors with remaining magazine state upon player death or drop action.
+  - Interactive pickup traces and inventory attachment.
+- **Dynamic Obstacle & Door Synchronization**:
+  - Replicate door swing states (`AA_Door`), latches, and breaches across reliable actor bunches.
+  - Interactive breakable window shattering and collision removal.
+
+---
+
+### Phase 7: Dedicated Server Admin & Telemetry ⏳ PLANNED
+
+- **RCON Protocol**: Authenticated TCP/UDP remote console interface for server administration.
+- **Administrative Commands**: Kick, ban, map rotation change, match restart, time limit override, and broadcast messaging.
+- **Security & Access Control**: IP whitelist/blacklist, GUID bans, and rate-limiting.
+- **Telemetry & Stats**: Periodic JSON/Prometheus metrics exporter (tick rate, packet loss, bandwidth, player latency, active collisions).
+
+---
+
+### Phase 8: Production Deployment & Containerization ⏳ PLANNED
+
+- **Docker Containerization**: Minimal multi-stage Debian/Alpine runtime image (< 80 MB base) bundling the compiled binary and `data/maps/`.
+- **Systemd Service Integration**: Service unit files with `Restart=always`, resource limits (`LimitNOFILE`), and graceful SIGTERM handling.
+- **Automated CI/CD**: GitHub Actions workflow for automated compilation, test execution (`ctest`), and release artifact packaging.
+
+---
+
+## 3. Project Roadmap Summary Table
+
+| Phase | Description | Deliverables | Status | Tests / Verification |
+|---|---|---|---|---|
+| **Phase 1** | Foundation & Steamworks | CMake, 60 Hz loop, `SteamAuthManager`, Config, Logging | ✅ COMPLETE | Server boots, Steam callbacks functional |
+| **Phase 2** | Network Protocol & Bunches | Handshake, Channel 0, Reliable bunches, Opcode remap | ✅ COMPLETE | Client connection captures pass handshake |
+| **Phase 3** | Actor Replication & Game Logic | RepLayouts, Squad/Roles, Movement, Hitscan ballistics | ✅ COMPLETE | Character postures, hitboxes, round timer |
+| **Phase 4** | Map Modernization Pipeline | `AA3MAP01` container, BLAS/TLAS (`AA3COL03`), Quantization (`AA3COL04`), C++ Extractor | ✅ COMPLETE | 4 CTest suites pass (100%), 18 retail maps baked |
+| **Phase 5** | Multi-Map Standalone Execution | CLI `--map <name>`, zero-package runtime, live loading | ✅ COMPLETE | All 18 maps boot cleanly in headless mode |
+| **Phase 6** | Gameplay Depth & Tactical Mechanics | Medical triage/revive, dropped weapons, door states | 🔄 IN PROGRESS | Unit tests for IFAK state machine |
+| **Phase 7** | Administration & Telemetry | RCON protocol, ban/kick commands, metric exports | ⏳ PLANNED | RCON client integration tests |
+| **Phase 8** | Deployment & Containerization | Dockerfile, systemd service, GitHub Actions CI | ⏳ PLANNED | Container startup and headless healthcheck |
+
+---
+
+## 4. Key Architectural Decisions
+
+1. **Standalone `.aa3map` Containers vs Cooked Packages**:
+   - *Decision*: Headless server uses offline-baked `.aa3map` containers rather than loading proprietary cooked Unreal packages at runtime.
+   - *Rationale*: Cuts server data footprint from 1.2+ GB to 195 MB, eliminates licensing and distribution liabilities, and loads memory-mapped data in < 5 ms.
+
+2. **BLAS / TLAS Instanced Collision Hierarchy**:
+   - *Decision*: Separate unique meshes into local-space BLAS and placed instances into TLAS transforms.
+   - *Rationale*: Eliminates redundant geometry coordinates, speeds up BVH tree generation from 362 ms to 72 ms, and cuts collision memory by 75%.
+
+3. **16-Bit Quantized Coordinates (`AA3COL04`)**:
+   - *Decision*: Compress mesh-local vertex coordinates into 16-bit integers relative to mesh bounding bounds.
+   - *Rationale*: Cuts coordinate storage by 50% with sub-centimeter delta error, proving 100% ray-trace parity across 2,000 randomized test rays.
+
+4. **POSIX `mmap` Zero-Copy Page Sharing**:
+   - *Decision*: Map file bundles using `mmap(..., MAP_SHARED)`.
+   - *Rationale*: Multiple game server instances running on the same Linux host share identical physical memory pages for map collision geometry.
+
+---
+
+## 5. Verification & Testing Strategy
+
+Continuous automated testing is enforced via `ctest`:
+
+- **Collision Parity Test** ([`tests/collision_parity_test.cpp`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/tests/collision_parity_test.cpp)): Validates BLAS/TLAS ray intersection against raw uninstanced geometry across 2,000 rays with 100% agreement.
+- **Package Extractor Test** ([`tests/package_extractor_test.cpp`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/tests/package_extractor_test.cpp)): Validates direct UE3 v568 package extraction for StaticMesh LOD0 buffers, kDOP hulls, and BSP geometry.
+- **Collision Quantization Test** ([`tests/collision_quant_test.cpp`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/tests/collision_quant_test.cpp)): Confirms 16-bit coordinate quantization preserves ray hit detection with zero false negatives and sub-centimeter accuracy.
+- **Mission Extraction Test** ([`tests/mission_extraction_test.cpp`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/tests/mission_extraction_test.cpp)): Verifies extraction of the full 26-slot Infantry Combat Team hierarchy, extraction zones, and interactive map entities.
