@@ -18,9 +18,6 @@ original UnrealScript source that ships inside them.
 - Steamworks SDK in `external/steamworks_sdk_linux/` (only for Steam mode;
   `--standalone` runs without it)
 - libzstd-dev, liblzo2-dev, OpenSSL dev headers
-- **No AA3 install is needed to run the server.** All 18 retail maps ship in
-  `data/maps/` as lossless, compressed bundles (`<map>.aa3map.zst`, 49 MB),
-  checked 1:1 against the original packages. Players still need the game.
 
 ### Build & Run
 ```bash
