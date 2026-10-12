@@ -141,6 +141,56 @@ public:
     // by one per round, and the client's ammo follows it (doc sec 31).
     void SetTrigger(ServerPawn* pawn, bool down);
     void ApplyPawnAction(ServerPawn* pawn, PawnAction a, bool arg = false);
+    // ServerSetRailMod("PrimaryOne", rail, index) (retail frames 218/234,
+    // doc sec 37): the PRI's mriPrimaryWeaponOneMods rail takes element
+    // `index` of the role's allowed list for that rail; -1 clears it. The
+    // mods are built on the rifle at the next spawn. False if refused.
+    bool SetRailMod(ServerPlayerController& pc, const std::string& weapon,
+                    const std::string& rail, int32_t index);
+
+    // IFAK treatment (doc sec 39; src/game/medic.cpp). ServerStartTreatment:
+    // the patient named, if `medic` can treat them (null if not).
+    ServerPawn* StartTreatment(ServerPawn* medic, const std::string& patient_name);
+    // ServerStartPassiveTreatment: stop the bleeding, work the wounds.
+    bool StartPassiveTreatment(ServerPawn* medic);
+    // ServerStopTreatment (also when the patient is lost).
+    void StopTreatment(ServerPawn* medic);
+    // ServerGiveActiveTreatment(type, ..., name): on a downed patient, an
+    // IFAK (the patient's first) recapacitates them. False if nothing done.
+    bool GiveActiveTreatment(ServerPawn* medic, const std::string& type, const std::string& patient_name);
+
+    // ServerES2Use(obj) on an AA_ES2InstaPerk (AA_ES2InstaPerk.PerformES2Use):
+    // one item from the perk -- a grenade of its type, or a magazine/box for
+    // the matching weapon -- and PerkAmount down by one; emptied, it's gone.
+    // False if nothing was taken.
+    bool UseES2Object(ServerPlayerController& pc, const ServerActor* obj);
+
+    // Grenades (doc sec 37; retail GamePlayPCAP_Legit_Server t=436-510).
+    // EInventoryType of a pawn's AA_ThrowWeapon (0 if `a` is none).
+    uint8_t GrenadeInventoryType(const ServerPawn* pawn, const ServerActor* a) const;
+    // ServerSetCurrentWeapon(grenade): one comes out of the PRI count and
+    // into the hand. False when none of that type are left.
+    bool TakeGrenade(ServerPawn* pawn, const ServerActor* grenade);
+    // ServerSetCurrentWeapon(rifle) while a grenade is in hand (or after a
+    // throw): an unthrown grenade goes back to its pouch, the rifle is drawn.
+    // Returns the grenade that was in hand (null if none).
+    const ServerActor* PutAwayGrenade(ServerPawn* pawn, const ServerActor* weapon);
+    // AA_ThrowWeapon RPCs on the grenade in hand.
+    enum class GrenadeInput { kPullPin, kCook, kRelease, kSwitchThrowType };
+    void GrenadeAction(ServerPawn* pawn, const ServerActor* grenade, GrenadeInput in);
+    // Thrown grenades in flight or burning: opened to every player, closed
+    // when `gone` (their LifeSpan, as retail), then dropped a while later.
+    struct ThrownGrenade {
+        std::unique_ptr<ServerRoundActor> actor;
+        ServerPawn* instigator = nullptr;
+        int spec = 0;
+        double thrown_at = 0.0, explode_at = 0.0, gone_at = 0.0, drop_at = 0.0;
+        Vec3 pos, vel;
+        bool resting = false, exploded = false, gone = false;
+        double next_burn = 0.0;
+    };
+    const std::vector<ThrownGrenade>& ThrownGrenades() const { return thrown_; }
+
     // A pawn's inventory actors (doc sec 30), or null.
     const std::vector<std::unique_ptr<ServerRoundActor>>* PawnInventory(const ServerPawn* p) const {
         auto it = pawn_inventory_.find(p);
@@ -206,6 +256,23 @@ private:
         const std::vector<ActorTemplate>& templates,
         const std::map<int64_t, const ServerActor*>& outside);
     std::vector<ActorTemplate> inventory_template_;
+    // Weapons (src/game/weapons.cpp): rail mods on the rifle, grenades.
+    void BuildRailMods(ServerPlayerController& pc, std::vector<std::unique_ptr<ServerRoundActor>>& items,
+                       ServerRoundActor& weapon, uint32_t default_sight_cls);
+    void UpdateGrenades(double dt);
+    // Wounds, bleeding and treatment (src/game/medic.cpp).
+    void UpdateInjuries(double dt);
+    void AddWound(ServerPawn& victim, int location, float bleed, const std::string& attacker);
+    ServerPawn* FindPatient(const ServerPawn& medic, const std::string& name);
+    void Recapacitate(ServerPawn& patient);
+    void ThrowGrenade(ServerPawn& pawn, ServerRoundActor& grenade, bool in_hand);
+    void ReplaceGrenade(ServerPawn& pawn, ServerRoundActor& thrown);
+    void ExplodeGrenade(ThrownGrenade& g);
+    void BurnAround(ThrownGrenade& g);
+    // Damage that isn't a bullet (grenades): `damage` points of `damage_class`.
+    void ApplyDamage(ServerPawn& victim, ServerPawn* instigator, float damage, uint32_t damage_class,
+                     const Vec3& at, const Vec3& dir);
+    std::vector<ThrownGrenade> thrown_;
     std::map<const ServerPawn*, std::vector<std::unique_ptr<ServerRoundActor>>> pawn_inventory_;
     std::vector<std::unique_ptr<ServerRoundActor>> round_actors_;
     std::vector<std::unique_ptr<ServerRoundActor>> map_actors_;
@@ -281,6 +348,20 @@ private:
     };
     std::vector<ExtractionRule> extraction_rules_;
     std::vector<uint32_t> viewpoints_;              // map NetIndex of AA_Viewpoint actors
+    // Fire team spawn markers of the gametype level (AA_MCFireteamSpawnMarker
+    // and its AA_PlayerStarts), from the mission rules.
+    struct MarkerSpawns {
+        uint32_t net = 0;
+        int32_t team = 0;
+        int32_t fire_team = 0;
+        std::vector<SpawnPoint> starts;
+    };
+    std::vector<MarkerSpawns> spawn_markers_;
+    // The team whose mission type is to defend (wins on time), -1 if none.
+    int32_t defending_team_ = -1;
+    // Where `pc` spawns: its fire team's marker (the other side's on a
+    // side-swapped round), member by member over the marker's PlayerStarts.
+    const SpawnPoint* FireTeamSpawn(const ServerPlayerController& pc) const;
     std::array<bool, 2> had_valid_players_{};       // AA_TeamInfo.bHadValidPlayersDuringRound
     int32_t round_winner_ = -1;
     int32_t finished_round_ = 0;

@@ -25,9 +25,12 @@ Thumbs.db
 # Local-only config overrides
 config/aa3_server.local.ini
 
-# Collision worlds and unified map bundles generated from cooked maps.
+# Legacy flat collision generated from cooked maps (dev tests only).
 /data/collision/
-/data/maps/
+# Map bundles: the shipped, lossless form is tracked (data/maps/<map>.aa3map.zst,
+# checked 1:1 against an install with `aa3_mapbake --verify`); uncompressed
+# local re-bakes (<map>.aa3map) stay out of git.
+/data/maps/*.aa3map
 
 # Runtime stats export
 /stats/

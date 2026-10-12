@@ -248,6 +248,18 @@ struct ServerPlayerReplicationInfo : ServerActor {
     // mriPrimaryWeaponOneMods rails: Main, Top, Left, Right, Bottom, RearSight
     // (package + NetIndex of the mod class; empty package = None).
     std::array<std::pair<std::string, uint32_t>, 6> primary_mods{};
+    // Grenades carried (AA_PlayerReplicationInfo.iFragGrenades ...): the
+    // role's counts at spawn, one less per grenade taken in hand (retail
+    // frames 376, 40214, 40898; doc sec 37). The InventoryManager keeps one
+    // preloaded AA_ThrowWeapon of each type; these say how many are left.
+    int32_t frag_grenades = 0;            // M67
+    int32_t smoke_grenades = 0;           // M83
+    int32_t m106_grenades = 0;            // M106
+    int32_t stun_grenades = 0;            // M84
+    int32_t incendiary_grenades = 0;      // AN-M14 TH3
+    // bHasReviveKit: an IFAK in the pouch (AA_InventoryContainer_Pouch_IFAK
+    // sets it; retail sends True at spawn). The client's treat prompt needs it.
+    bool has_revive_kit = false;
     bool has_had_role_assigned = false;
     bool is_fire_team_leader = false;
     bool vote_ready = false;
@@ -277,6 +289,10 @@ struct ServerPlayerController : ServerActor {
     struct ServerPawn* pawn = nullptr;   // Controller.Pawn — set once the Pawn exists
     struct ServerSteamStatManager* stat_manager = nullptr; // this client's Ch=3 actor
     struct ServerMOSQualificationBCT* mos_qual = nullptr;  // this client's Ch=5 actor
+    // The other MOS qualifications retail opens beside BCT (LAN servers
+    // authorize everything): DRM/Grenadier/AR/Rifleman AIT and Combat
+    // Medic, which the client's treatment checks need (doc sec 39.7).
+    std::vector<struct ServerMOSQualificationBCT*> extra_mos_quals;
     struct ServerPlayerStorageProxy* proxy = nullptr;     // AA_PlayerController.PlayerProxy
     // AA_PlayerController.bUseFlashSAI: retail's PC open sets it (doc sec 27).
     bool use_flash_sai = true;
@@ -358,6 +374,9 @@ struct ServerPawn : ServerActor {
     // the initial reload ends and while sprinting; selected_rof is what it
     // returns to (live retail capture t=29.75/31.05/32.79; doc sec 32).
     uint8_t selected_rof = 1;
+    // Rounds in one of the kit's magazines (AmmoContainer RoundCount: 30,
+    // the M249's box 200); the magazine is spent when RoundIndex reaches it.
+    int32_t mag_rounds = 30;
     double next_shot_at = 0.0;
     int32_t burst_left = 0;
     ServerPlayerReplicationInfo* pri = nullptr;   // Pawn.PlayerReplicationInfo
@@ -431,7 +450,40 @@ struct ServerPawn : ServerActor {
     uint32_t incap_type_index = 0;        // IncapacitationType wire ObjectIndex (static class ref)
     std::string incap_instigator = "Unknown";
     int incap_stage = 0;                  // 0 down, 1 +0.23 s, 2 ragdoll settled (+1.2 s)
-    bool bleeding = false;                // AA_Pawn.bIsBleeding: Health drains while down
+    bool bleeding = false;                // AA_Pawn.bIsBleeding: Health drains (to HealthTarget, or while down)
+    // Wounds and treatment (doc sec 39, retail capture 2026-10-11). Per
+    // eHitLocation (18) up to MAX_WOUNDS (10): AA_Pawn.ReplicatedInjuryVariables
+    // {BleedRate, WoundTreatmentProgress[10]} and RepNotifyInjuryVariables
+    // {WoundStatus[10] = {WoundType, step, CurrentStatusLevel}}.
+    static constexpr int kHitLocations = 18;
+    static constexpr int kMaxWounds = 10;
+    struct Wound {
+        bool present = false;
+        bool treated = false;             // CurrentStatusLevel 1
+        float progress = 0.0f;            // WoundTreatmentProgress
+        bool operator!=(const Wound& o) const {
+            return present != o.present || treated != o.treated || progress != o.progress;
+        }
+    };
+    std::array<std::array<Wound, kMaxWounds>, kHitLocations> wounds{};
+    std::array<float, kHitLocations> bleed_rate{};
+    const ServerPawn* treater = nullptr;  // AA_Pawn.CurrentTreatmentTreater[0]
+    ServerPawn* patient = nullptr;        // AA_Pawn.CurrentTreatmentPatient (medic side)
+    bool passive_treatment = false;       // AA_Pawn.bPassiveTreatmentActive
+    bool recapacitated = false;           // AA_Pawn.bRecapacitated
+    bool reset_weapon_ik = false;         // AA_Pawn.bResetWeaponIK
+    uint32_t recap_serial = 0;            // revived: ClientRecapacitate + PC notices to the owner
+    bool recap_used_own_ifak = false;     // ...and ClientNotifyDiscardInventory(IFAK)
+    std::string last_attacker;            // instigator name for a bleed-out incapacitation
+    float target_before_incap = 0.0f;     // HealthTarget when downed (the bleed still owed)
+    bool HasInjury(bool lower) const {
+        for (int l = 0; l < kHitLocations; ++l) {
+            if ((l >= 12) != lower) continue;             // HL_UpperLegRight.. = lower body
+            for (const Wound& w : wounds[static_cast<size_t>(l)])
+                if (w.present && !w.treated) return true;
+        }
+        return false;
+    }
     bool ragdoll = false;                 // bRagdollTick + bRagdollStuck: settle into the incap pose
     float health_target = 100.0f;     // AA_Pawn.HealthTarget: set with Health on a hit (retail)
     // Owner-side notices the protocol sends when these serials change.
@@ -458,6 +510,36 @@ struct ServerPawn : ServerActor {
     float movement_speed_modifier = 0.8852f;
     int32_t original_owning_team = 0;          // Actor.iOriginalOwningTeamIndex
     const ServerActor* proxy = nullptr;        // AA_Pawn.PlayerProxy
+
+    // Grenade in hand (doc sec 37, retail GamePlayPCAP_Legit_Server
+    // t=436-451): taken out with ServerSetCurrentWeapon, pin pulled on
+    // ServerStartFire, cooked with CookIt, thrown 0.49 s after
+    // ServerStopFire. `rifle` is the weapon it replaced, re-drawn on the
+    // switch back.
+    const ServerActor* held_grenade = nullptr;
+    const ServerActor* rifle = nullptr;
+    double grenade_equip_at = -1.0;
+    int grenade_stage = 0;               // 0 holstering rifle, 1 grenade shown, 2 in hand
+    bool pin_pulled = false;
+    bool cooking = false;
+    bool underhand = false;              // AA_ThrowWeapon.SwitchThrowType
+    double cook_start = 0.0;
+    double throw_at = -1.0;
+    double rifle_draw_at = -1.0;         // rifle back on the pawn (+0.2 s)
+    uint32_t switch_best_serial = 0;     // Controller.ClientSwitchToBestWeapon(True) after a throw
+    // A cook (AA_ThrowWeapon.CookIt) runs its own clock, thrown or not
+    // (retail t=447.84): bCooking clears when the fuse would have run out
+    // (+5.0 s for the M67, t=452.80) and CookingDelayedRestoreTimer (fuse +
+    // 0.25) -> RequestWeaponRestoreTimer (+0.9) has the server put the
+    // previous weapon back in hand: InventoryManager.SetCurrentWeapon(rifle)
+    // to the client (t=453.94).
+    const ServerActor* cooked_grenade = nullptr;
+    double cook_clear_at = -1.0;
+    double cook_restore_at = -1.0;
+    uint32_t weapon_restore_serial = 0;  // InventoryManager.SetCurrentWeapon(rifle) to send
+    // Held past the fuse: AA_ThrowWeapon.HolderDied -> ClientHolderDied().
+    const ServerActor* holder_died_grenade = nullptr;
+    uint32_t holder_died_serial = 0;
 
     // Runtime animation/stance state (Pawn.*, RepIndex 37-43, unchanged by doc sec 19). No
     // defaultproperties for these — they're live state, not spawn-time

@@ -92,6 +92,22 @@ const std::vector<RpcSpec>& Table() {
         {rep::PC::ServerSetRailMod, PcRpc::kServerSetRailMod, "ServerSetRailMod",
          {K::kString, K::kString, K::kInt}},
         {rep::PC::AskForPawn, PcRpc::kAskForPawn, "AskForPawn", {}},
+        // ES2 objects (live client 2026-10-11: a perk pickup sends
+        // ServerES2Active + ServerUse + ServerES2Use in one bunch).
+        {rep::PC::ServerES2Use, PcRpc::kServerES2Use, "ServerES2Use", {K::kObject}},
+        // IFAK treatment (retail capture 2026-10-11; doc sec 39). The active
+        // treatment's WoundTreatmentAction struct goes out Send=0 (default).
+        {rep::PC::ServerStartTreatment, PcRpc::kServerStartTreatment, "ServerStartTreatment",
+         {K::kString}},
+        {rep::PC::ServerStartPassiveTreatment, PcRpc::kServerStartPassiveTreatment,
+         "ServerStartPassiveTreatment", {}},
+        {rep::PC::ServerStopTreatment, PcRpc::kServerStopTreatment, "ServerStopTreatment", {}},
+        {rep::PC::ServerGiveActiveTreatment, PcRpc::kServerGiveActiveTreatment,
+         "ServerGiveActiveTreatment", {K::kName, K::kOpaque, K::kString}},
+        {rep::PC::ServerWeaponRaise, PcRpc::kServerWeaponRaise, "ServerWeaponRaise", {K::kBool}},
+        {rep::AGP_PC::SendCommoRequest, PcRpc::kSendCommoRequest, "SendCommoRequest", {K::kEnum6}},
+        {rep::PC::ServerES2Active, PcRpc::kServerES2Active, "ServerES2Active",
+         {K::kObject, K::kObject, K::kBool}},
         // AGP_PlayerController-only (appended after AA_PC's 473 fields).
         {rep::AGP_PC::SendES2ObjectReportRequest, PcRpc::kSendES2ObjectReportRequest,
          "SendES2ObjectReportRequest", {K::kObject}},
@@ -165,6 +181,7 @@ RpcDecodeResult DecodePcRpc(util::BitReader& r, uint32_t end_bit, uint32_t max_i
                         }
                         case K::kInt:    v.i = static_cast<int32_t>(r.ReadInt()); break;
                         case K::kByte:   v.i = r.ReadByte(); break;
+                        case K::kEnum6:  v.i = static_cast<int32_t>(r.ReadBits(6)); break;
                         case K::kVector: ReadCompressedVector(r, v.v); break;
                         case K::kString:
                             if (!ReadFString(r, &v.s)) return RpcDecodeResult::kOverrun;

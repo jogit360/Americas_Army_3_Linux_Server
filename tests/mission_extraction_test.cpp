@@ -13,7 +13,7 @@ using namespace aa3::game;
 
 int main(int argc, char** argv) {
     LOG_INIT();
-    const char* bundle_path = argc > 1 ? argv[1] : "data/maps/Pipeline_dawn_clear.aa3map";
+    const char* bundle_path = argc > 1 ? argv[1] : "data/maps/Pipeline_dawn_clear.aa3map.zst";
 
     std::printf("========================================\n");
     std::printf(" Phase 4: Mission & Game-Mode Extraction Test\n");

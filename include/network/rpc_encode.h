@@ -186,7 +186,15 @@ void BuildClientSetBlockOnAsyncLoadingRPC(util::BitWriter& w);
 
 // Spawn inventory (retail frames 365/376; doc sec 30).
 // ClientNotifyChangedWeapon(awepNew, aawpnOld=None): the weapon in hand.
-void BuildClientNotifyChangedWeaponRPC(util::BitWriter& w, uint32_t weapon_channel);
+void BuildClientNotifyChangedWeaponRPC(util::BitWriter& w, uint32_t weapon_channel,
+                                       uint32_t old_weapon_channel = 0);
+// Grenade HUD (retail frames 40844 / 41268, doc sec 37):
+// ClientSendHUDNotifyChangeInventoryCount(InventoryType, NumClips[, ClipIndex])
+// and ClientAdvancedInventoryUpdateGrenadeCounts(itActiveInventoryItem[, bNoUpdateCurrent]).
+void BuildClientSendHUDNotifyChangeInventoryCountRPC(util::BitWriter& w, uint8_t inventory_type,
+                                                     int32_t num_clips);
+void BuildClientAdvancedInventoryUpdateGrenadeCountsRPC(util::BitWriter& w, uint8_t inventory_type,
+                                                        bool no_update_current);
 // EInventoryType is 5 bits (CeilLog2(NumEnums-1)).
 void BuildClientSendHUDNotifyAddedInventoryRPC(util::BitWriter& w, uint8_t inventory_type,
                                                bool has_weapon_mod);

@@ -153,6 +153,25 @@ class BR:
         return tuple(self.int_max(m) - bias for _ in range(3))
 
 
+_DR = []
+
+
+def _decode_rep():
+    """aa3-tools/map_manifest/decode_rep (layouts from the cooked packages),
+    loaded on first use; None if it isn't there."""
+    if not _DR:
+        import importlib
+        import os
+        tools = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                             "aa3-tools", "map_manifest")
+        sys.path.insert(0, os.path.abspath(tools))
+        try:
+            _DR.append(importlib.import_module("decode_rep"))
+        except Exception:
+            _DR.append(None)
+    return _DR[0]
+
+
 def fstring(s):
     b = s.encode() + b"\0"
     return struct.pack("<I", len(b)) + b
@@ -191,6 +210,11 @@ class Client:
         self.phase_rpcs = []        # (t, name) round-phase announcements
         self.gave_pawn = False      # own pawn channel opened (possession)
         self.open_locs = {}         # ch -> spawn Location from a transient actor's open
+        self.control_msgs = []      # Ch=0 control messages received (retail login)
+        self.retail = False         # logged in to a retail server (retail_handshake)
+        self.own_pawn_ch = OWN_PAWN_CH   # from ClientRestart(NewPawn)
+        self.pending_visibility = []     # (level, visible) to confirm (retail)
+        self.role_select_open = 0        # OpenRoleSelectOnTeamJoin() calls (retail)
 
     def send_bits(self, w):
         with self.lock:
@@ -262,11 +286,48 @@ class Client:
         self.recv_all(0.5)
         self.send_bits(self.control_bunch("JOIN"))
 
-    def send_move(self, ts, loc, yaw, pitch=0):
+    def retail_handshake(self, name, timeout=20.0):
+        """The real client's login, which a retail AA3Game server requires
+        (GamePlayPCAP_Legit_Server frames 1-70): HELLO -> CHALLENGE; NETSPEED
+        + LOGIN RESPONSE=0 URL=...?Name=... (0 = no auth, LAN) -> USES x N +
+        WELCOME; HAVE GUID=<g> GEN=<n> for every USES, then JOIN. Returns
+        False if the server never welcomes us."""
+        def wait_for(prefix, secs):
+            end = time.time() + secs
+            while time.time() < end:
+                with self.lock:
+                    if any(m.startswith(prefix) for m in self.control_msgs):
+                        return True
+                self.recv_all(0.1)
+            return False
+        self.retail = True
+        self.send_bits(self.control_bunch("HELLO P=1 REVISION=0 MINVER=3077 VER=4206", b_open=True))
+        if not wait_for("CHALLENGE", timeout):
+            return False
+        self.send_bits(self.control_bunch("NETSPEED 10000"))
+        self.send_bits(self.control_bunch(
+            f"LOGIN RESPONSE=0 URL=ui_bink_master?Name={name}?MAXCLIENTNETSPEED=25000?team=0?Face=0"))
+        if not wait_for("WELCOME", timeout):
+            return False
+        self.recv_all(0.5)                                   # trailing USES/DLMGR
+        with self.lock:
+            uses = [m for m in self.control_msgs if m.startswith("USES ")]
+        for m in uses:
+            f = dict(kv.split("=", 1) for kv in m.split()[1:] if "=" in kv)
+            if "GUID" in f:
+                self.send_bits(self.control_bunch(f"HAVE GUID={f['GUID']} GEN={f.get('GEN', '1')}"))
+                self.recv_all(0.005)
+        self.send_bits(self.control_bunch("JOIN"))
+        return True
+
+    def send_move(self, ts, loc, yaw, pitch=0, accel=None):
         p = BW()
         p.int_max(REP_SERVERMOVE, PC_MAX)
         p.bit(1); p.f32(ts)                                  # TimeStamp
-        p.bit(0)                                             # InAccel = 0
+        if accel:                                            # InAccel: the walk input
+            p.bit(1); p.vec(*accel)
+        else:
+            p.bit(0)                                         # InAccel = 0
         p.bit(1); p.vec(*loc)                                # ClientLoc
         p.bit(0); p.bit(0)                                   # MoveFlags, ClientRoll
         p.bit(1); p.u32(((yaw & 0xFFFF) << 16) | (pitch & 0xFFFF))  # View
@@ -411,6 +472,19 @@ class Client:
             return {ch: sorted(q) for ch, q in self.in_rec.items() if q}
 
     def deliver(self, ch, b_open, b_close, payload):
+        if ch == 0 and payload:
+            # Control channel: FString messages (CHALLENGE, USES, WELCOME...).
+            data = bytes(sum(payload[i + k] << k for k in range(8) if i + k < len(payload))
+                         for i in range(0, len(payload) - 7, 8))
+            pos = 0
+            while pos + 4 <= len(data):
+                n = struct.unpack_from("<i", data, pos)[0]
+                if n <= 0 or pos + 4 + n > len(data):
+                    break
+                text = data[pos + 4:pos + 4 + n].rstrip(b"\0").decode("latin1")
+                with self.lock:
+                    self.control_msgs.append(text)
+                pos += 4 + n
         if ch >= 2 and payload:
             w = BW()
             w.bits = payload
@@ -418,6 +492,44 @@ class Client:
         if b_close:
             with self.lock:
                 self.ch_class.pop(ch, None)
+
+    def parse_pc_retail(self, data, start, bdb):
+        """Every call in a retail PC bunch (retail packs the phase RPCs
+        behind others, and gives the pawn through Controller.Pawn, not
+        ClientRestart's argument), via aa3-tools' decode_rep."""
+        dr = _decode_rep()
+        if dr is None:
+            return
+        r = dr.BitReader(data)
+        r.pos = start
+        dec = dr.Decoder(r)
+        try:
+            for _, _, name, val in dr.decode_fields(dec, "AGP_PlayerController", start + bdb):
+                short = name.rsplit(".", 1)[-1]
+                with self.lock:
+                    if short == "ClientAckGoodMove()":
+                        self.acks += 1
+                    elif short == "Pawn":
+                        if isinstance(val, str) and val.startswith("<dynamic ch "):
+                            self.own_pawn_ch = int(val.split()[-1].rstrip(">"))
+                            self.gave_pawn = True
+                        else:                               # None: died / round over
+                            self.own_pawn_ch = None
+                            self.gave_pawn = False
+                    elif short == "ClientUpdateLevelStreamingStatus()" and isinstance(val, dict):
+                        name = str(val.get("PackageName", "")).strip("'")
+                        if name:
+                            self.pending_visibility.append((name, bool(val.get("bNewShouldBeVisible"))))
+                    elif short == "OpenRoleSelectOnTeamJoin()":
+                        self.role_select_open += 1
+                    elif short == "TeamMessage()":
+                        self.team_messages += 1
+                    else:
+                        for idx, phase in PHASE_RPCS.items():
+                            if short == f"Client{phase}()":
+                                self.phase_rpcs.append((round(time.time() - T0, 1), phase))
+        except Exception:
+            pass
 
     def parse_actor(self, data, ch, start, bdb, b_open):
         r = BR(data, start + bdb)
@@ -428,7 +540,7 @@ class Client:
                 obj = r.int_max(0x80000000)
                 with self.lock:
                     self.ch_class[ch] = obj
-                    if ch == OWN_PAWN_CH:
+                    if ch == OWN_PAWN_CH and not self.retail:
                         self.gave_pawn = True      # possession opens the own pawn (doc sec 29)
                     if ch != PC_CH:
                         # Transient actors start with SerializeCompressedInitial
@@ -450,6 +562,9 @@ class Client:
                         self.pc_opens.append((ch, r.bitsn(8)))
                 return  # property payload after the preamble: not needed here
             obj = self.ch_class.get(ch)
+            if ch == PC_CH and self.retail:
+                self.parse_pc_retail(data, start, bdb)
+                return
             if ch == PC_CH:
                 idx = r.int_max(PC_MAX)
                 if idx == REP_ACKGOODMOVE:
@@ -459,7 +574,14 @@ class Client:
                     with self.lock:
                         self.team_messages += 1
                 elif idx == REP_CLIENTRESTART:
+                    # ClientRestart(NewPawn): Send, bDynamic, the pawn's channel
+                    # (retail numbers it dynamically, e.g. 159; ours is 11).
+                    ch_pawn = None
+                    if r.bit() and r.bit():
+                        ch_pawn = r.int_max(0x800)
                     with self.lock:
+                        if ch_pawn:
+                            self.own_pawn_ch = ch_pawn
                         self.gave_pawn = True
                 elif idx in PHASE_RPCS:
                     with self.lock:

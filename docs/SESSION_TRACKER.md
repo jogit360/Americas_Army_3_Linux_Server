@@ -389,5 +389,35 @@ LOG_SET_LEVEL(LOG_LEVEL_DEBUG);  // In main.cpp
 
 ---
 
-**Last Updated**: 2026-10-10  
-**Current Status**: Map Modernization (Phases 0–4) and All 18 Retail Maps Fully Completed & Verified.
+## Recent Session: Weapons, Grenades & IFAK Treatment (2026-10-11 – 2026-10-12)
+
+### Work Completed ✅
+
+1. **Weapons & sights** (`src/game/weapons.cpp`, doc sec 37): per-role kits with fire rate and magazine
+   size (fixed the M249, whose shots didn't register: it was run as semi-auto with a 30-round magazine), rail mods.
+2. **Grenades**: five types end to end. Fixed after real-client play: the cooked grenade's weapon restore,
+   the second smoke grenade (the replacement's `ClientGivenTo` must name the pawn), ES2 perk pickups
+   (RPCs 232/233 were unknown and dropped the rest of the bunch).
+3. **Friend/enemy look** (doc sec 38).
+4. **Retail IFAK capture**: a retail LAN server from `../AA3` (PunkBuster off, ROE auto-kick, idle kick and
+   auto-balance off) with `bot_client.py --retail` bots; the user treated and revived a bot teammate.
+   Decoded into doc sec 39.1–39.4.
+5. **Wounds, bleeding, treatment, revive** (`src/game/medic.cpp`, doc sec 39.5).
+6. **Treat prompt** (doc sec 39.7): the real client showed no "Treat Soldier" prompt; the medic was
+   missing 5 of retail's 6 MOS qualification actors (Combat Medic among them) and `PRI.bHasReviveKit`.
+   Both added; verified with `tests/medic_scenario.py` (medic, patient, enemy bots).
+
+### Test Status
+- ctest: 5/5 pass.
+- `fake_client.py --round`, `grenade_client.py`, `medic_client.py`, `medic_scenario.py`: PASS.
+
+### Next
+- Real-client test of the treat prompt; active treatments; medic call/withdraw RPCs; scoring; arm hit zones.
+- Retail install configs changed for the capture (backups: `../AA3/Binaries/pb/pbsvgame.cfg.bak`,
+  `../AA3/AA3Game/Config/AA3Game.ini.bak_before_ifak_test`) — restore while the retail server is stopped.
+- Nothing committed yet.
+
+---
+
+**Last Updated**: 2026-10-12  
+**Current Status**: Maps complete; weapons, grenades and IFAK treatment/revive implemented and bot-tested.

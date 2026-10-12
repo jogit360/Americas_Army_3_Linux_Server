@@ -1,0 +1,1703 @@
+{
+ "note": "Per-class AA_MCClassRoleReplicationInfo fields as retail sends them (class defaults from AA3Baseline; same on every map). Derived from retail capture GamePlayPCAP_Legit_Server via config/maps/Bridge_inf_classic_large_dev.round.json, minus the per-slot iTeamID/iFireTeamID/sClassRoleID. aa3_mapbake applies each gametype level's loadout overrides on top.",
+ "cdo": {
+  "kind": "obj",
+  "pkg": "AA3Baseline",
+  "net": 16252
+ },
+ "max_index": 94,
+ "roles": {
+  "AA_MCClassRole_Rifleman": [
+   {
+    "idx": 24,
+    "name": "RoleLoadoutTypes",
+    "kind": "struct",
+    "members": [
+     {
+      "kind": "bool",
+      "v": true,
+      "field": "bDefined"
+     },
+     {
+      "kind": "int",
+      "v": 8,
+      "field": "iPrimaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iPrimaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iFragGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iSmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iM106SmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iIncendiaryGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iStunGrenades"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryOneModAmmo"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryTwoModAmmo"
+     }
+    ]
+   },
+   {
+    "idx": 26,
+    "name": "RoleLoadoutTypes",
+    "kind": "struct",
+    "members": [
+     {
+      "kind": "bool",
+      "v": true,
+      "field": "bDefined"
+     },
+     {
+      "kind": "int",
+      "v": 3,
+      "field": "iPrimaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iPrimaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iFragGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iM106SmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iIncendiaryGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iStunGrenades"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryOneModAmmo"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryTwoModAmmo"
+     }
+    ]
+   },
+   {
+    "idx": 33,
+    "name": "AA_MCClassRoleReplicationInfo.iStunGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 34,
+    "name": "AA_MCClassRoleReplicationInfo.iM106SmokeGrenades",
+    "kind": "int",
+    "v": 1
+   },
+   {
+    "idx": 35,
+    "name": "AA_MCClassRoleReplicationInfo.iSmokeGrenades",
+    "kind": "int",
+    "v": 1
+   },
+   {
+    "idx": 36,
+    "name": "AA_MCClassRoleReplicationInfo.iFragGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 67,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneRightRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35843,
+    "elem": 0
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35979,
+    "elem": 0
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35972,
+    "elem": 1
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35943,
+    "elem": 2
+   },
+   {
+    "idx": 87,
+    "name": "AA_MCClassRoleReplicationInfo.iPrimaryWeaponOneAmmo",
+    "kind": "int",
+    "v": 6
+   },
+   {
+    "idx": 88,
+    "name": "AA_MCClassRoleReplicationInfo.wpnPrimaryOne",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 5152
+   },
+   {
+    "idx": 92,
+    "name": "AA_MCClassRoleReplicationInfo.sClassRoleName",
+    "kind": "str",
+    "v": "Rifleman"
+   }
+  ],
+  "AA_MCClassRole_SquadLeader": [
+   {
+    "idx": 24,
+    "name": "RoleLoadoutTypes",
+    "kind": "struct",
+    "members": [
+     {
+      "kind": "bool",
+      "v": true,
+      "field": "bDefined"
+     },
+     {
+      "kind": "int",
+      "v": 8,
+      "field": "iPrimaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iPrimaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iFragGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 3,
+      "field": "iSmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 3,
+      "field": "iM106SmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iIncendiaryGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iStunGrenades"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryOneModAmmo"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryTwoModAmmo"
+     }
+    ]
+   },
+   {
+    "idx": 26,
+    "name": "RoleLoadoutTypes",
+    "kind": "struct",
+    "members": [
+     {
+      "kind": "bool",
+      "v": true,
+      "field": "bDefined"
+     },
+     {
+      "kind": "int",
+      "v": 3,
+      "field": "iPrimaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iPrimaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iFragGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iSmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iM106SmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iIncendiaryGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iStunGrenades"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryOneModAmmo"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryTwoModAmmo"
+     }
+    ]
+   },
+   {
+    "idx": 33,
+    "name": "AA_MCClassRoleReplicationInfo.iStunGrenades",
+    "kind": "int",
+    "v": 1
+   },
+   {
+    "idx": 34,
+    "name": "AA_MCClassRoleReplicationInfo.iM106SmokeGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 35,
+    "name": "AA_MCClassRoleReplicationInfo.iSmokeGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 36,
+    "name": "AA_MCClassRoleReplicationInfo.iFragGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 67,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneRightRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35843,
+    "elem": 0
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35979,
+    "elem": 0
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35972,
+    "elem": 1
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35943,
+    "elem": 2
+   },
+   {
+    "idx": 73,
+    "name": "AA_MCClassRoleReplicationInfo.bSquadLeader",
+    "kind": "bool",
+    "v": true
+   },
+   {
+    "idx": 87,
+    "name": "AA_MCClassRoleReplicationInfo.iPrimaryWeaponOneAmmo",
+    "kind": "int",
+    "v": 6
+   },
+   {
+    "idx": 88,
+    "name": "AA_MCClassRoleReplicationInfo.wpnPrimaryOne",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 5250
+   },
+   {
+    "idx": 92,
+    "name": "AA_MCClassRoleReplicationInfo.sClassRoleName",
+    "kind": "str",
+    "v": "Squad Leader"
+   }
+  ],
+  "AA_MCClassRole_FireteamLeader": [
+   {
+    "idx": 24,
+    "name": "RoleLoadoutTypes",
+    "kind": "struct",
+    "members": [
+     {
+      "kind": "bool",
+      "v": true,
+      "field": "bDefined"
+     },
+     {
+      "kind": "int",
+      "v": 8,
+      "field": "iPrimaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iPrimaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iFragGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 3,
+      "field": "iSmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 3,
+      "field": "iM106SmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iIncendiaryGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iStunGrenades"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryOneModAmmo"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryTwoModAmmo"
+     }
+    ]
+   },
+   {
+    "idx": 26,
+    "name": "RoleLoadoutTypes",
+    "kind": "struct",
+    "members": [
+     {
+      "kind": "bool",
+      "v": true,
+      "field": "bDefined"
+     },
+     {
+      "kind": "int",
+      "v": 3,
+      "field": "iPrimaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iPrimaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iFragGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iSmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iM106SmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iIncendiaryGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iStunGrenades"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryOneModAmmo"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryTwoModAmmo"
+     }
+    ]
+   },
+   {
+    "idx": 33,
+    "name": "AA_MCClassRoleReplicationInfo.iStunGrenades",
+    "kind": "int",
+    "v": 1
+   },
+   {
+    "idx": 34,
+    "name": "AA_MCClassRoleReplicationInfo.iM106SmokeGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 35,
+    "name": "AA_MCClassRoleReplicationInfo.iSmokeGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 36,
+    "name": "AA_MCClassRoleReplicationInfo.iFragGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 67,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneRightRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35843,
+    "elem": 0
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35979,
+    "elem": 0
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35972,
+    "elem": 1
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35943,
+    "elem": 2
+   },
+   {
+    "idx": 72,
+    "name": "AA_MCClassRoleReplicationInfo.bFireTeamLeader",
+    "kind": "bool",
+    "v": true
+   },
+   {
+    "idx": 87,
+    "name": "AA_MCClassRoleReplicationInfo.iPrimaryWeaponOneAmmo",
+    "kind": "int",
+    "v": 6
+   },
+   {
+    "idx": 88,
+    "name": "AA_MCClassRoleReplicationInfo.wpnPrimaryOne",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 5250
+   },
+   {
+    "idx": 92,
+    "name": "AA_MCClassRoleReplicationInfo.sClassRoleName",
+    "kind": "str",
+    "v": "Fireteam Leader"
+   }
+  ],
+  "AA_MCClassRole_Grenadier": [
+   {
+    "idx": 24,
+    "name": "RoleLoadoutTypes",
+    "kind": "struct",
+    "members": [
+     {
+      "kind": "bool",
+      "v": true,
+      "field": "bDefined"
+     },
+     {
+      "kind": "int",
+      "v": 8,
+      "field": "iPrimaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iPrimaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iFragGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iSmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iM106SmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iIncendiaryGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iStunGrenades"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 3,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 2,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryOneModAmmo"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryTwoModAmmo"
+     }
+    ]
+   },
+   {
+    "idx": 26,
+    "name": "RoleLoadoutTypes",
+    "kind": "struct",
+    "members": [
+     {
+      "kind": "bool",
+      "v": true,
+      "field": "bDefined"
+     },
+     {
+      "kind": "int",
+      "v": 3,
+      "field": "iPrimaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iPrimaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iFragGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iSmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iM106SmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iIncendiaryGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iStunGrenades"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 1,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 1,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryOneModAmmo"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryTwoModAmmo"
+     }
+    ]
+   },
+   {
+    "idx": 33,
+    "name": "AA_MCClassRoleReplicationInfo.iStunGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 34,
+    "name": "AA_MCClassRoleReplicationInfo.iM106SmokeGrenades",
+    "kind": "int",
+    "v": 1
+   },
+   {
+    "idx": 35,
+    "name": "AA_MCClassRoleReplicationInfo.iSmokeGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 63,
+    "name": "AA_MCClassRoleReplicationInfo.iPrimaryOneModM203SmokeGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 64,
+    "name": "AA_MCClassRoleReplicationInfo.iPrimaryOneModM203FragGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 66,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneBottomRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 36153,
+    "elem": 0
+   },
+   {
+    "idx": 67,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneRightRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35843,
+    "elem": 0
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35979,
+    "elem": 0
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35972,
+    "elem": 1
+   },
+   {
+    "idx": 87,
+    "name": "AA_MCClassRoleReplicationInfo.iPrimaryWeaponOneAmmo",
+    "kind": "int",
+    "v": 6
+   },
+   {
+    "idx": 88,
+    "name": "AA_MCClassRoleReplicationInfo.wpnPrimaryOne",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 5152
+   },
+   {
+    "idx": 92,
+    "name": "AA_MCClassRoleReplicationInfo.sClassRoleName",
+    "kind": "str",
+    "v": "Grenadier"
+   }
+  ],
+  "AA_MCClassRole_AutomaticRifleman": [
+   {
+    "idx": 24,
+    "name": "RoleLoadoutTypes",
+    "kind": "struct",
+    "members": [
+     {
+      "kind": "bool",
+      "v": true,
+      "field": "bDefined"
+     },
+     {
+      "kind": "int",
+      "v": 3,
+      "field": "iPrimaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iPrimaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iFragGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iSmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iM106SmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iIncendiaryGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iStunGrenades"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryOneModAmmo"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryTwoModAmmo"
+     }
+    ]
+   },
+   {
+    "idx": 26,
+    "name": "RoleLoadoutTypes",
+    "kind": "struct",
+    "members": [
+     {
+      "kind": "bool",
+      "v": true,
+      "field": "bDefined"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iPrimaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iPrimaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iFragGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iSmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iM106SmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iIncendiaryGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iStunGrenades"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryOneModAmmo"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryTwoModAmmo"
+     }
+    ]
+   },
+   {
+    "idx": 33,
+    "name": "AA_MCClassRoleReplicationInfo.iStunGrenades",
+    "kind": "int",
+    "v": 1
+   },
+   {
+    "idx": 34,
+    "name": "AA_MCClassRoleReplicationInfo.iM106SmokeGrenades",
+    "kind": "int",
+    "v": 1
+   },
+   {
+    "idx": 35,
+    "name": "AA_MCClassRoleReplicationInfo.iSmokeGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 36,
+    "name": "AA_MCClassRoleReplicationInfo.iFragGrenades",
+    "kind": "int",
+    "v": 1
+   },
+   {
+    "idx": 67,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneRightRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35843,
+    "elem": 0
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35979,
+    "elem": 0
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35972,
+    "elem": 1
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35952,
+    "elem": 2
+   },
+   {
+    "idx": 87,
+    "name": "AA_MCClassRoleReplicationInfo.iPrimaryWeaponOneAmmo",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 88,
+    "name": "AA_MCClassRoleReplicationInfo.wpnPrimaryOne",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 5244
+   },
+   {
+    "idx": 92,
+    "name": "AA_MCClassRoleReplicationInfo.sClassRoleName",
+    "kind": "str",
+    "v": "Automatic Rifleman"
+   }
+  ],
+  "AA_MCClassRole_DesignatedMarksman": [
+   {
+    "idx": 24,
+    "name": "RoleLoadoutTypes",
+    "kind": "struct",
+    "members": [
+     {
+      "kind": "bool",
+      "v": true,
+      "field": "bDefined"
+     },
+     {
+      "kind": "int",
+      "v": 8,
+      "field": "iPrimaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iPrimaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iFragGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iSmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iM106SmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iIncendiaryGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iStunGrenades"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryOneModAmmo"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryTwoModAmmo"
+     }
+    ]
+   },
+   {
+    "idx": 26,
+    "name": "RoleLoadoutTypes",
+    "kind": "struct",
+    "members": [
+     {
+      "kind": "bool",
+      "v": true,
+      "field": "bDefined"
+     },
+     {
+      "kind": "int",
+      "v": 3,
+      "field": "iPrimaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iPrimaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryOneAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iSecondaryTwoAmmo"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iFragGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iSmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 1,
+      "field": "iM106SmokeGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 0,
+      "field": "iIncendiaryGrenades"
+     },
+     {
+      "kind": "int",
+      "v": 2,
+      "field": "iStunGrenades"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryOneModAmmo"
+     },
+     {
+      "kind": "struct",
+      "name": "PrimaryModAmmoRoleLoadout",
+      "members": [
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203FragGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iM203SmokeGrenades"
+       },
+       {
+        "kind": "int",
+        "v": 0,
+        "field": "iMasterKeyShells"
+       }
+      ],
+      "field": "mcpmaPrimaryTwoModAmmo"
+     }
+    ]
+   },
+   {
+    "idx": 33,
+    "name": "AA_MCClassRoleReplicationInfo.iStunGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 34,
+    "name": "AA_MCClassRoleReplicationInfo.iM106SmokeGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 35,
+    "name": "AA_MCClassRoleReplicationInfo.iSmokeGrenades",
+    "kind": "int",
+    "v": 2
+   },
+   {
+    "idx": 36,
+    "name": "AA_MCClassRoleReplicationInfo.iFragGrenades",
+    "kind": "int",
+    "v": 1
+   },
+   {
+    "idx": 67,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneRightRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35843,
+    "elem": 0
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35979,
+    "elem": 0
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35972,
+    "elem": 1
+   },
+   {
+    "idx": 70,
+    "name": "AA_MCClassRoleReplicationInfo.aawmbPrimaryOneMainRail",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 35933,
+    "elem": 2
+   },
+   {
+    "idx": 87,
+    "name": "AA_MCClassRoleReplicationInfo.iPrimaryWeaponOneAmmo",
+    "kind": "int",
+    "v": 6
+   },
+   {
+    "idx": 88,
+    "name": "AA_MCClassRoleReplicationInfo.wpnPrimaryOne",
+    "kind": "obj",
+    "pkg": "AA3Baseline",
+    "net": 5156
+   },
+   {
+    "idx": 92,
+    "name": "AA_MCClassRoleReplicationInfo.sClassRoleName",
+    "kind": "str",
+    "v": "Squad Designated Marksman"
+   }
+  ]
+ }
+}

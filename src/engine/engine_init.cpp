@@ -103,8 +103,12 @@ bool Engine::Initialize(const std::string& config_path) {
     world_.Initialize(config_.map_name);
 
     // Try loading unified MapBundle first (data/maps/<map_name>.aa3map)
+    // The shipped maps are data/maps/<map>.aa3map.zst; an uncompressed
+    // .aa3map beside it (a local re-bake) takes precedence.
     std::string bundle_path = GetConfigValue(
         "MapBundlePath", "data/maps/" + config_.map_name + ".aa3map");
+    if (!std::filesystem::exists(bundle_path) && std::filesystem::exists(bundle_path + ".zst"))
+        bundle_path += ".zst";
     std::unique_ptr<engine::MapBundle> map_bundle;
     if (std::filesystem::exists(bundle_path)) {
         auto bundle = std::make_unique<engine::MapBundle>();

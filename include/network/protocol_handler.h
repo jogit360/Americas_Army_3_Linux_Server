@@ -100,6 +100,9 @@ struct ClientSession {
     uint32_t confirm_reload_sent = 0, mag_count_sent = 0;  // ServerPawn reload serials sent
     uint32_t breath_end_sent = 0;                           // ServerPawn::breath_end_serial sent
     uint32_t hit_sent = 0, sling_sent = 0, vault_sent = 0;  // ServerPawn notice serials sent
+    uint32_t switch_best_sent = 0;                          // ServerPawn.switch_best_serial sent
+    uint32_t weapon_restore_sent = 0, holder_died_sent = 0; // ServerPawn cook notices sent
+    uint32_t recap_sent = 0;                                // ServerPawn.recap_serial sent
     uint32_t incap_sent = 0;       // ServerPawn::incap_serial announced (doc sec 35)
     uint32_t current_weapon_ch = 0;   // last weapon confirmed to the client (doc sec 30)
     uint32_t loaded_mag_serial_sent = 0;  // ServerPawn::loaded_mag_serial last announced

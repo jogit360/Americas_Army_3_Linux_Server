@@ -41,6 +41,8 @@ set(SERVER_SOURCES
     src/game/player_manager.cpp
     src/game/stats_export.cpp
     src/game/world.cpp
+    src/game/weapons.cpp
+    src/game/medic.cpp
     src/game/collision.cpp
     src/util/bits.cpp
     src/util/crc.cpp
@@ -72,6 +74,13 @@ if(NOT LZO2_LIBRARY)
                         "or set -DLZO2_LIBRARY=<path> on the cmake line.")
 endif()
 
+# libzstd reads the shipped map bundles (data/maps/<map>.aa3map.zst).
+find_library(ZSTD_LIBRARY NAMES zstd)
+if(NOT ZSTD_LIBRARY)
+    message(FATAL_ERROR "libzstd not found. Install libzstd-dev (Debian/Ubuntu)\n"
+                        "or set -DZSTD_LIBRARY=<path> on the cmake line.")
+endif()
+
 # OpenSSL provides SHA256 for manifest source hashing.
 find_package(OpenSSL REQUIRED)
 
@@ -86,6 +95,7 @@ target_link_libraries(aa3_server PRIVATE
     z
     ${STEAMWORKS_LIB_DIR}/libsteam_api.so
     ${LZO2_LIBRARY}
+    ${ZSTD_LIBRARY}
     OpenSSL::Crypto
     pthread
     dl
@@ -127,10 +137,12 @@ install(TARGETS aa3_build_manifests DESTINATION bin)
 # Offline map bundler: packages all server map data into .aa3map bundles.
 add_executable(aa3_mapbake
     tools/map_bake/main.cpp
+    src/engine/mission_extractor.cpp
     src/engine/map_bundle.cpp
     src/engine/map_manifest.cpp
     src/engine/package_reader.cpp
     src/engine/package_extractor.cpp
+    src/engine/package_props.cpp
     src/game/collision.cpp
     src/util/crc.cpp
     src/util/json.cpp
@@ -141,6 +153,7 @@ target_include_directories(aa3_mapbake PRIVATE
 )
 target_link_libraries(aa3_mapbake PRIVATE
     ${LZO2_LIBRARY}
+    ${ZSTD_LIBRARY}
     OpenSSL::Crypto
     pthread
     dl
@@ -187,22 +200,31 @@ target_link_libraries(lan_beacon_test PRIVATE z)
 add_executable(collision_test tests/collision_test.cpp src/game/collision.cpp src/util/logging.cpp)
 target_include_directories(collision_test PRIVATE include)
 
-add_executable(collision_parity_test tests/collision_parity_test.cpp src/game/collision.cpp src/util/logging.cpp)
+add_executable(collision_parity_test tests/collision_parity_test.cpp src/game/collision.cpp
+    src/engine/map_bundle.cpp src/engine/map_manifest.cpp src/engine/package_reader.cpp
+    src/util/crc.cpp src/util/json.cpp src/util/logging.cpp)
 target_include_directories(collision_parity_test PRIVATE include)
+target_link_libraries(collision_parity_test PRIVATE ${LZO2_LIBRARY} ${ZSTD_LIBRARY} OpenSSL::Crypto z)
 
 add_executable(package_extractor_test
     tests/package_extractor_test.cpp
+    src/engine/map_bundle.cpp
+    src/engine/map_manifest.cpp
     src/engine/package_extractor.cpp
+    src/engine/package_props.cpp
     src/engine/package_reader.cpp
     src/game/collision.cpp
+    src/util/crc.cpp
+    src/util/json.cpp
     src/util/logging.cpp
 )
 target_include_directories(package_extractor_test PRIVATE include)
-target_link_libraries(package_extractor_test PRIVATE ${LZO2_LIBRARY} z)
+target_link_libraries(package_extractor_test PRIVATE ${LZO2_LIBRARY} ${ZSTD_LIBRARY} OpenSSL::Crypto z)
 
 add_executable(collision_quant_test
     tests/collision_quant_test.cpp
     src/engine/package_extractor.cpp
+    src/engine/package_props.cpp
     src/engine/package_reader.cpp
     src/game/collision.cpp
     src/util/logging.cpp
@@ -216,7 +238,10 @@ add_executable(mission_extraction_test
     src/engine/map_manifest.cpp
     src/engine/package_reader.cpp
     src/engine/package_extractor.cpp
+    src/engine/package_props.cpp
     src/game/world.cpp
+    src/game/weapons.cpp
+    src/game/medic.cpp
     src/game/collision.cpp
     src/game/player_manager.cpp
     src/game/stats_export.cpp
@@ -230,14 +255,37 @@ add_executable(mission_extraction_test
     src/util/json.cpp
 )
 target_include_directories(mission_extraction_test PRIVATE include ${STEAMWORKS_INCLUDE_DIR})
-target_link_libraries(mission_extraction_test PRIVATE ${LZO2_LIBRARY} z OpenSSL::Crypto pthread dl)
+target_link_libraries(mission_extraction_test PRIVATE ${LZO2_LIBRARY} ${ZSTD_LIBRARY} z OpenSSL::Crypto pthread dl)
+
+# Every baked bundle: class MaxIndex, NetIndex ranges, armed roles, spawn ground.
+add_executable(map_bundle_validation_test
+    tests/map_bundle_validation_test.cpp
+    src/engine/map_bundle.cpp
+    src/engine/map_manifest.cpp
+    src/engine/mission_extractor.cpp
+    src/engine/package_props.cpp
+    src/engine/package_reader.cpp
+    src/game/collision.cpp
+    src/util/crc.cpp
+    src/util/json.cpp
+    src/util/logging.cpp
+)
+target_include_directories(map_bundle_validation_test PRIVATE include)
+target_link_libraries(map_bundle_validation_test PRIVATE ${LZO2_LIBRARY} ${ZSTD_LIBRARY} z OpenSSL::Crypto pthread dl)
 
 enable_testing()
 add_test(NAME collision_parity_test COMMAND collision_parity_test)
 add_test(NAME package_extractor_test COMMAND package_extractor_test)
 add_test(NAME collision_quant_test COMMAND collision_quant_test)
 add_test(NAME mission_extraction_test COMMAND mission_extraction_test)
+add_test(NAME map_bundle_validation_test COMMAND map_bundle_validation_test)
 set_tests_properties(collision_parity_test package_extractor_test collision_quant_test mission_extraction_test
+    map_bundle_validation_test
     PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+# Tests that read an AA3 install (packages or files generated from them)
+# exit 77 without one: reported as skipped, not failed.
+set_tests_properties(collision_parity_test package_extractor_test collision_quant_test
+    PROPERTIES SKIP_RETURN_CODE 77
 )
 

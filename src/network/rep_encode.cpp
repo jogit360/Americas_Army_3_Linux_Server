@@ -470,6 +470,25 @@ uint32_t EncodePRIRep(BitWriter& w, const ServerPlayerReplicationInfo& cur,
               prev ? &prev->current_class_role_id : nullptr);
     str_field(rep::PRI::sClassRoleName, cur.class_role_name, prev ? &prev->class_role_name : nullptr);
     int_field(rep::PRI::iPrimaryOneAmmo, cur.primary_one_ammo, prev ? &prev->primary_one_ammo : nullptr);
+    // Grenade counts (retail frame 376: Frag, Smoke, M106, Stun at spawn;
+    // each new count as a grenade is taken; doc sec 37). Zero is the class
+    // default, so the open leaves them out.
+    auto count_field = [&](uint32_t rep_index, int32_t cur_v, const int32_t* prev_v) {
+        if (prev_v ? *prev_v != cur_v : cur_v != 0) {
+            w.WriteIntMax(rep_index, M);
+            w.WriteInt(static_cast<uint32_t>(cur_v));
+            ++n;
+        }
+    };
+    count_field(rep::PRI::iFragGrenades, cur.frag_grenades, prev ? &prev->frag_grenades : nullptr);
+    count_field(rep::PRI::iSmokeGrenades, cur.smoke_grenades, prev ? &prev->smoke_grenades : nullptr);
+    count_field(rep::PRI::iM106SmokeGrenades, cur.m106_grenades, prev ? &prev->m106_grenades : nullptr);
+    count_field(rep::PRI::iStunGrenades, cur.stun_grenades, prev ? &prev->stun_grenades : nullptr);
+    count_field(rep::PRI::iIncendiaryGrenades, cur.incendiary_grenades,
+                prev ? &prev->incendiary_grenades : nullptr);
+    if (prev ? prev->has_revive_kit != cur.has_revive_kit : cur.has_revive_kit) {   // retail: True at spawn only
+        w.WriteIntMax(rep::PRI::bHasReviveKit, M); w.WriteBit(cur.has_revive_kit); ++n;
+    }
     bool_field(rep::PRI::bHasHadRoleAssigned, cur.has_had_role_assigned,
                prev ? &prev->has_had_role_assigned : nullptr);
     bool_field(rep::PRI::bIsFireTeamLeader, cur.is_fire_team_leader,
@@ -766,17 +785,30 @@ uint32_t EncodePawnRep(BitWriter& w, const ServerPawn& cur, const ServerPawn* pr
         ref(rep::Pawn::PlayerProxy, cur.proxy);
         float_field(rep::Pawn::MovementSpeedModifier, cur.movement_speed_modifier,
                     prev ? &prev->movement_speed_modifier : nullptr);
-        if (initial) {
-            // Inventory association name (= every inventory item's), the
-            // owning team, and the posture state graph slot 2 (retail frame 366).
-            w.WriteIntMax(rep::Pawn::namePawnInventoryAssociation, M);
-            WriteStrProp(w, cur.inventory_association);
-            w.WriteInt(static_cast<uint32_t>(cur.inventory_association_number));
-            w.WriteIntMax(rep::Pawn::iOriginalOwningTeamIndex, M);
-            w.WriteInt(static_cast<uint32_t>(cur.original_owning_team));
-            n += 2;
+    }
+    // Actor.uc: `if (bNetInitial && Role == ROLE_Authority)
+    // iOriginalOwningTeamIndex, namePawnInventoryAssociation` -- every
+    // connection, not just the owner. The team is what AA3's swap reads: a
+    // soldier not of the viewer's team is drawn as the enemy force (doc sec
+    // 38); left at the -1 default, enemies looked like US soldiers.
+    if (initial) {
+        w.WriteIntMax(rep::Pawn::namePawnInventoryAssociation, M);
+        WriteStrProp(w, cur.inventory_association);
+        w.WriteInt(static_cast<uint32_t>(cur.inventory_association_number));
+        w.WriteIntMax(rep::Pawn::iOriginalOwningTeamIndex, M);
+        w.WriteInt(static_cast<uint32_t>(cur.original_owning_team));
+        n += 2;
+    }
+    if (!owner && do_rest && !initial) {
+        // A wounded soldier's Health/HealthTarget go to the others too
+        // (retail capture 2026-10-11: the medic sees the patient's drain;
+        // doc sec 39). Not on the open: the class default (100) stands.
+        float_field(rep::Pawn::Health, cur.health, &prev->health);
+        if (cur.health_target != prev->health_target) {
+            w.WriteIntMax(rep::Pawn::HealthTarget, M); WriteFloatProp(w, cur.health_target); ++n;
         }
-    } else {
+    }
+    if (!owner) {
         // ---- Non-owners only: `bIsCrouched, FlashCount, FiringMode`.
         bool_field(rep::Pawn::bIsCrouched, cur.b_is_crouched, prev ? &prev->b_is_crouched : nullptr);
         byte_field(rep::Pawn::FlashCount, cur.flash_count, prev ? &prev->flash_count : nullptr);
@@ -883,6 +915,63 @@ uint32_t EncodePawnRep(BitWriter& w, const ServerPawn& cur, const ServerPawn* pr
         w.WriteIntMax(rep::Pawn::bRagdollTick, M); w.WriteBit(cur.ragdoll);
         w.WriteIntMax(rep::Pawn::bRagdollStuck, M); w.WriteBit(cur.ragdoll);
         n += 2;
+    }
+    // Wounds and treatment (doc sec 39), every connection, as retail.
+    if (do_rest) {
+        if (cur.treater != base.treater) {                // CurrentTreatmentTreater[0]
+            w.WriteIntMax(rep::Pawn::CurrentTreatmentTreater, M);
+            w.WriteByte(0);
+            WriteActorRef(w, cur.treater && ctx.channel_of ? ctx.channel_of(cur.treater) : 0);
+            ++n;
+        }
+        const uint32_t gunshot = ctx.object_index ? ctx.object_index("AA3Baseline", 36462) : 0;   // AA_Wound_Gunshot
+        for (int l = 0; l < game::ServerPawn::kHitLocations; ++l) {
+            const auto& cw = cur.wounds[static_cast<size_t>(l)];
+            const auto& bw = base.wounds[static_cast<size_t>(l)];
+            bool progress_changed = cur.bleed_rate[static_cast<size_t>(l)] != base.bleed_rate[static_cast<size_t>(l)];
+            bool status_changed = false;
+            for (int k = 0; k < game::ServerPawn::kMaxWounds; ++k) {
+                const auto& a = cw[static_cast<size_t>(k)];
+                const auto& b = bw[static_cast<size_t>(k)];
+                if (a.progress != b.progress) progress_changed = true;
+                if (a.present != b.present || a.treated != b.treated) status_changed = true;
+            }
+            if (progress_changed) {                       // ReplicatedInjuryVariables[l]
+                w.WriteIntMax(rep::Pawn::ReplicatedInjuryVariables, M);
+                w.WriteByte(static_cast<uint8_t>(l));
+                WriteFloatProp(w, cur.bleed_rate[static_cast<size_t>(l)]);
+                for (const auto& wd : cw) WriteFloatProp(w, wd.progress);
+                ++n;
+            }
+            if (status_changed) {                         // RepNotifyInjuryVariables[l]
+                w.WriteIntMax(rep::Pawn::RepNotifyInjuryVariables, M);
+                w.WriteByte(static_cast<uint8_t>(l));
+                for (const auto& wd : cw) {               // WoundStatus[k]
+                    if (wd.present && gunshot) {          //   WoundType: static class ref
+                        w.WriteBit(false);
+                        w.WriteIntMax(gunshot, 0x80000000);
+                    } else {
+                        WriteActorRef(w, 0);              //   None (12 bits, as retail)
+                    }
+                    w.WriteInt(0);                        //   WoundTreatmentStepIndex
+                    w.WriteBits(wd.present && wd.treated ? 1u : 0u, 2);   // CurrentStatusLevel (eTreatmentLevel)
+                }
+                ++n;
+            }
+        }
+        const bool lower = cur.HasInjury(true), upper = cur.HasInjury(false);
+        if (lower != base.HasInjury(true)) {
+            w.WriteIntMax(rep::Pawn::bHasLowerBodyInjury, M); w.WriteBit(lower); ++n;
+        }
+        if (upper != base.HasInjury(false)) {
+            w.WriteIntMax(rep::Pawn::bHasUpperBodyInjury, M); w.WriteBit(upper); ++n;
+        }
+        if (cur.recapacitated != base.recapacitated) {
+            w.WriteIntMax(rep::Pawn::bRecapacitated, M); w.WriteBit(cur.recapacitated); ++n;
+        }
+        if (cur.reset_weapon_ik != base.reset_weapon_ik) {
+            w.WriteIntMax(rep::Pawn::bResetWeaponIK, M); w.WriteBit(cur.reset_weapon_ik); ++n;
+        }
     }
     return n;
 }

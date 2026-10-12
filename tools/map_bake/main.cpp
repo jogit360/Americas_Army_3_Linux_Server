@@ -12,6 +12,7 @@
 //                            [--gametype-level <level>]
 //                            [--spawn0 <x,y,z,yaw>] [--spawn1 <x,y,z,yaw>]
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -21,8 +22,11 @@
 #include <string>
 #include <vector>
 
+#include <zstd.h>
+
 #include "engine/map_bundle.h"
 #include "engine/map_manifest.h"
+#include "engine/mission_extractor.h"
 #include "engine/package_extractor.h"
 #include "engine/package_reader.h"
 #include "util/json.h"
@@ -33,12 +37,17 @@ using namespace aa3::engine;
 
 namespace {
 
+// Collision format: lossless AA3COL03 (the packages' float vertices, 1:1;
+// the default) or AA3COL04 (16-bit quantized, ~1 cm error) with --quantized.
+bool g_quantize = false;
+
 void PrintUsage() {
     std::cout << "aa3_mapbake - America's Army 3 Map Bundler\n\n"
               << "Usage:\n"
               << "  aa3_mapbake --info <bundle.aa3map>\n"
               << "  aa3_mapbake --bake --package <path.u> [options]\n"
               << "  aa3_mapbake --batch-bake [options]\n"
+              << "  aa3_mapbake --verify [--cooked-maps <dir>] [--bundles <dir>]\n"
               << "  aa3_mapbake --pack-loose --map <map_name> [options]\n\n"
               << "Options for --bake (Direct-From-Package Ingestion):\n"
               << "  --package <path>          Path to map package (.u or .aa3)\n"
@@ -48,12 +57,18 @@ void PrintUsage() {
               << "  --maps-dir <dir>          Directory containing mission/actors JSON overrides\n"
               << "  --spawn0 <x,y,z,yaw>      Team 0 spawn point override\n"
               << "  --spawn1 <x,y,z,yaw>      Team 1 spawn point override\n"
-              << "  --inventory <path>        Path to spawn_inventory.json\n\n"
+              << "  --inventory <path>        Path to spawn_inventory.json\n"
+              << "  --quantized               16-bit quantized collision (AA3COL04) instead of\n"
+              << "                            the lossless float default (AA3COL03)\n\n"
               << "Options for --batch-bake:\n"
               << "  --cooked-maps <dir>       Path to CookedPC/Maps directory\n"
               << "  --out-dir <dir>           Output directory for .aa3map files (default: data/maps)\n"
               << "  --maps-dir <dir>          Directory containing config/maps overrides (default: config/maps)\n"
-              << "  --inventory <path>        Path to spawn_inventory.json (default: config/spawn_inventory.json)\n\n"
+              << "  --inventory <path>        Path to spawn_inventory.json (default: config/spawn_inventory.json)\n"
+              << "  --quantized               as for --bake\n"
+              << "  --ship                    write the shipped form, <map>.aa3map.zst\n\n"
+              << "--verify: re-bakes every map from the install's cooked packages and checks\n"
+              << "  each shipped bundle (default dir data/maps) is identical, section by section.\n\n"
               << "Options for --pack-loose:\n"
               << "  --out <path>              Output bundle path (default: data/maps/<map>.aa3map)\n"
               << "  --maps-dir <dir>          Directory containing .manifest.json, .actors.json etc. (default: config/maps)\n"
@@ -323,6 +338,9 @@ int DoPackLoose(const std::string& map_name,
     return 0;
 }
 
+const char* const kDefaultClassTable = "config/class_maxindex_table.tsv";
+const char* const kDefaultRoleTemplates = "config/class_role_templates.json";
+
 int DoBake(const std::string& pkg_path,
            const std::string& sublevel_path,
            const std::string& cooked_root,
@@ -330,7 +348,9 @@ int DoBake(const std::string& pkg_path,
            const std::string& maps_dir,
            const std::string& spawn0_override,
            const std::string& spawn1_override,
-           const std::string& inv_path) {
+           const std::string& inv_path,
+           const std::string& class_table_path = kDefaultClassTable,
+           const std::string& role_templates_path = kDefaultRoleTemplates) {
     PackageReadError perr;
     auto pkg_opt = PackageReader::ReadFile(pkg_path, &perr);
     if (!pkg_opt) {
@@ -415,13 +435,42 @@ int DoBake(const std::string& pkg_path,
         std::cerr << "  [-] Warning: no manifest generated\n";
     }
 
-    // 2. Collision (AA3COL04 Quantized)
+    // Loaded with the map: the gametype level and the geometry shards (every
+    // streamed sublevel in USES that isn't another gametype level).
+    std::optional<Package> sub_pkg;
+    if (!sublevel_path.empty()) {
+        PackageReadError serr;
+        sub_pkg = PackageReader::ReadFile(sublevel_path, &serr);
+        if (!sub_pkg) std::cerr << "  [-] Warning: sublevel " << sublevel_path << ": " << serr.message << "\n";
+    }
+    std::vector<Package> shards;
+    if (auto m = MapManifest::FromJson(manifest_str)) {
+        auto is_gametype_level = [](std::string n) {
+            std::transform(n.begin(), n.end(), n.begin(), ::tolower);
+            for (const char* k : {"_inf_", "_bct_", "_ait_"})
+                if (n.find(k) != std::string::npos) return true;
+            return false;
+        };
+        for (const auto& u : m->uses) {
+            if (u.role != "shard" || u.ext != "aa3" || is_gametype_level(u.pkg)) continue;
+            std::filesystem::path sp = std::filesystem::path(pkg_path).parent_path() / (u.pkg + ".aa3");
+            if (!std::filesystem::exists(sp)) continue;
+            if (auto sh = PackageReader::ReadFile(sp.string())) shards.push_back(std::move(*sh));
+        }
+    }
+    std::vector<const Package*> extra;
+    if (sub_pkg) extra.push_back(&*sub_pkg);
+    for (const auto& sh : shards) extra.push_back(&sh);
+
+    // 2. Collision (AA3COL03 lossless, or AA3COL04 quantized)
     std::vector<uint8_t> col_bytes;
     uint32_t n_meshes = 0, n_inst = 0, n_direct = 0, n_total = 0;
-    std::cout << "  [+] Extracting collision geometry directly from package...\n";
-    if (extractor.ExtractCollision(col_bytes, n_meshes, n_inst, n_direct, n_total, /*quantize=*/true)) {
+    std::cout << "  [+] Extracting collision geometry directly from package (+" << extra.size()
+              << " loaded sublevels)...\n";
+    if (extractor.ExtractCollision(col_bytes, n_meshes, n_inst, n_direct, n_total, g_quantize, extra)) {
         writer.AddSection(SectionType::kCollision, col_bytes.data(), col_bytes.size());
-        std::cout << "  [+] Packed Collision AA3COL04 Quantized (" << col_bytes.size() << " bytes, "
+        std::cout << "  [+] Packed Collision " << (g_quantize ? "AA3COL04 quantized" : "AA3COL03 lossless")
+                  << " (" << col_bytes.size() << " bytes, "
                   << n_meshes << " meshes, " << n_inst << " instances, "
                   << n_direct << " direct, " << n_total << " equivalent tris)\n";
     } else {
@@ -455,82 +504,93 @@ int DoBake(const std::string& pkg_path,
         }
     }
 
-    // 4. Spawns
+    // 4. Mission (round / join / match actors, rules, team spawns) from the
+    // gametype level's Kismet. Files in maps-dir (retail-capture data, e.g.
+    // Bridge classic's) override a section; a rules file overrides per key.
+    MissionData mission;
+    bool have_mission = false;
+    if (sub_pkg) {
+        std::string templates, terr;
+        MissionExtractor mx(*sub_pkg, gametype_level, pkg, map_name);
+        if (!ReadFileString(role_templates_path, templates) || !mx.LoadRoleTemplates(templates, &terr)) {
+            std::cerr << "  [-] Error: role templates " << role_templates_path << " " << terr << "\n";
+            return 1;
+        }
+        have_mission = mx.Build(mission);
+        for (const auto& w : mission.warnings) std::cerr << "  [!] " << w << "\n";
+        if (!have_mission) std::cout << "  [-] " << gametype_level << " has no team builders (training level)\n";
+    }
+    auto pack = [&](SectionType type, const std::string& file, const std::string& extracted, const char* what) {
+        std::string str;
+        if (ReadFileString(maps_dir + "/" + file, str)) {
+            writer.AddSectionString(type, str);
+            std::cout << "  [+] Packed " << what << " from file " << file << " (" << str.size() << " bytes)\n";
+        } else if (!extracted.empty()) {
+            writer.AddSectionString(type, extracted);
+            std::cout << "  [+] Extracted & Packed " << what << " (" << extracted.size() << " bytes)\n";
+        }
+    };
+
+    // 5. Spawns: override, else the first fire team's spawn marker per team.
     std::string s0 = spawn0_override;
     std::string s1 = spawn1_override;
+    for (int t = 0; t < 2; ++t) {
+        std::string& s = t == 0 ? s0 : s1;
+        if (!s.empty() || !mission.has_team_spawn[t]) continue;
+        const MissionSpawn& sp = mission.team_spawn[t];
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.1f,%.1f,%.1f,%d", sp.x, sp.y, sp.z, sp.yaw);
+        s = buf;
+    }
     if (s0.empty() || s1.empty()) {
         std::vector<SpawnPointDef> spawns;
-        if (!sublevel_path.empty()) {
-            auto sub_pkg = PackageReader::ReadFile(sublevel_path);
-            if (sub_pkg) {
-                PackageExtractor sub_ext(*sub_pkg);
-                sub_ext.ExtractSpawns(spawns);
-            }
-        }
-        if (spawns.empty()) {
-            extractor.ExtractSpawns(spawns);
-        }
+        if (sub_pkg) PackageExtractor(*sub_pkg).ExtractSpawns(spawns);
+        if (spawns.empty()) extractor.ExtractSpawns(spawns);
         for (const auto& sp : spawns) {
             char buf[64];
             std::snprintf(buf, sizeof(buf), "%.1f,%.1f,%.1f,%d", sp.x, sp.y, sp.z, sp.yaw);
-            if (sp.team == 0 && s0.empty()) s0 = buf;
-            if (sp.team == 1 && s1.empty()) s1 = buf;
+            if (s0.empty()) s0 = buf;
+            else if (s1.empty()) s1 = buf;
         }
     }
-    if (s0.empty()) s0 = "-7174,1386,40,16384";
-    if (s1.empty()) s1 = "-4000,2000,40,0";
+    if (s0.empty()) s0 = "0,0,100,0";
+    if (s1.empty()) s1 = s0;
     std::string spawns_json = "{\n  \"0\": \"" + s0 + "\",\n  \"1\": \"" + s1 + "\"\n}\n";
     writer.AddSectionString(SectionType::kSpawns, spawns_json);
-    std::cout << "  [+] Packed Spawns (Team 0 & Team 1)\n";
+    std::cout << "  [+] Packed Spawns (team 0 " << s0 << ", team 1 " << s1 << ")\n";
 
-    // 5. Map Actors
-    std::string map_actors_str;
-    if (ReadFileString(maps_dir + "/" + map_name + ".map_actors.json", map_actors_str)) {
-        writer.AddSectionString(SectionType::kMapActors, map_actors_str);
-        std::cout << "  [+] Packed MapActors from file (" << map_actors_str.size() << " bytes)\n";
-    } else if (extractor.ExtractMapActors(map_actors_str, map_name)) {
-        writer.AddSectionString(SectionType::kMapActors, map_actors_str);
-        std::cout << "  [+] Extracted & Packed MapActors (" << map_actors_str.size() << " bytes)\n";
+    // 6. Map Actors
+    {
+        std::string extracted;
+        auto max_table = LoadClassMaxIndexTable(class_table_path);
+        if (max_table.empty()) std::cerr << "  [-] Warning: no class MaxIndex table at " << class_table_path << "\n";
+        else extractor.ExtractMapActors(extracted, map_name, max_table);
+        pack(SectionType::kMapActors, map_name + ".map_actors.json", extracted, "MapActors");
     }
 
-    // 6. Round Actors
-    std::string round_actors_str;
-    if (ReadFileString(maps_dir + "/" + gametype_level + ".round.json", round_actors_str)) {
-        writer.AddSectionString(SectionType::kRoundActors, round_actors_str);
-        std::cout << "  [+] Packed RoundActors from file (" << round_actors_str.size() << " bytes)\n";
-    } else if (extractor.ExtractRoundActors(round_actors_str, gametype_level)) {
-        writer.AddSectionString(SectionType::kRoundActors, round_actors_str);
-        std::cout << "  [+] Extracted & Packed RoundActors (" << round_actors_str.size() << " bytes)\n";
-    }
+    // 7-9. Round / Join / Match actors
+    pack(SectionType::kRoundActors, gametype_level + ".round.json", have_mission ? mission.round_json : "", "RoundActors");
+    pack(SectionType::kJoinActors, gametype_level + ".join.json", have_mission ? mission.join_json : "", "JoinActors");
+    pack(SectionType::kMatchActors, gametype_level + ".match.json", have_mission ? mission.match_json : "", "MatchActors");
 
-    // 7. Join Actors
-    std::string join_actors_str;
-    if (ReadFileString(maps_dir + "/" + gametype_level + ".join.json", join_actors_str)) {
-        writer.AddSectionString(SectionType::kJoinActors, join_actors_str);
-        std::cout << "  [+] Packed JoinActors from file (" << join_actors_str.size() << " bytes)\n";
-    } else if (extractor.ExtractJoinActors(join_actors_str, gametype_level)) {
-        writer.AddSectionString(SectionType::kJoinActors, join_actors_str);
-        std::cout << "  [+] Extracted & Packed JoinActors (" << join_actors_str.size() << " bytes)\n";
-    }
-
-    // 8. Match Actors
-    std::string match_actors_str;
-    if (ReadFileString(maps_dir + "/" + gametype_level + ".match.json", match_actors_str)) {
-        writer.AddSectionString(SectionType::kMatchActors, match_actors_str);
-        std::cout << "  [+] Packed MatchActors from file (" << match_actors_str.size() << " bytes)\n";
-    } else if (extractor.ExtractMatchActors(match_actors_str, gametype_level)) {
-        writer.AddSectionString(SectionType::kMatchActors, match_actors_str);
-        std::cout << "  [+] Extracted & Packed MatchActors (" << match_actors_str.size() << " bytes)\n";
-    }
-
-    // 9. Mission Rules
-    std::string rules_str;
-    if (ReadFileString(maps_dir + "/" + gametype_level + ".rules.json", rules_str)) {
-        writer.AddSectionString(SectionType::kMissionRules, rules_str);
-        std::cout << "  [+] Packed MissionRules from file (" << rules_str.size() << " bytes)\n";
-    } else if (extractor.ExtractMissionRules(rules_str, map_name, gametype_level)) {
-        writer.AddSectionString(SectionType::kMissionRules, rules_str);
-        std::cout << "  [+] Extracted & Packed MissionRules (" << rules_str.size() << " bytes)\n";
+    // Mission rules: extracted, with any keys of a rules file on top.
+    {
+        std::string file_str, merged = have_mission ? mission.rules_json : "";
+        if (ReadFileString(maps_dir + "/" + gametype_level + ".rules.json", file_str)) {
+            auto file_doc = util::ParseJson(file_str);
+            auto ext_doc = merged.empty() ? std::nullopt : util::ParseJson(merged);
+            if (file_doc && ext_doc) {
+                for (const auto& [k, v] : file_doc->obj) ext_doc->obj[k] = v;
+                merged = util::WriteJson(*ext_doc);
+            } else {
+                merged = file_str;
+            }
+            std::cout << "  [+] Mission rules: " << gametype_level << ".rules.json keys override extracted ones\n";
+        }
+        if (!merged.empty()) {
+            writer.AddSectionString(SectionType::kMissionRules, merged);
+            std::cout << "  [+] Packed MissionRules (" << merged.size() << " bytes)\n";
+        }
     }
 
     // 10. Spawn Inventory
@@ -583,10 +643,38 @@ static const MapBakeTarget kRetailMaps[] = {
     {"shortrange", "short-range.aa3", "short-range_ait_advr1.aa3"},
 };
 
+// The shipped form of a bundle: the whole .aa3map compressed with zstd
+// (level 19, 128 MB long-distance window), which MapBundle::Load reads.
+bool ShipBundle(const std::string& raw_path) {
+    std::vector<uint8_t> raw;
+    if (!ReadFileBytes(raw_path, raw)) return false;
+    ZSTD_CCtx* cctx = ZSTD_createCCtx();
+    if (!cctx) return false;
+    ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, 19);
+    ZSTD_CCtx_setParameter(cctx, ZSTD_c_enableLongDistanceMatching, 1);
+    ZSTD_CCtx_setParameter(cctx, ZSTD_c_windowLog, 27);
+    ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 1);
+    std::vector<uint8_t> out(ZSTD_compressBound(raw.size()));
+    const size_t n = ZSTD_compress2(cctx, out.data(), out.size(), raw.data(), raw.size());
+    ZSTD_freeCCtx(cctx);
+    if (ZSTD_isError(n)) {
+        std::cerr << "  [-] zstd: " << ZSTD_getErrorName(n) << "\n";
+        return false;
+    }
+    std::ofstream f(raw_path + ".zst", std::ios::binary | std::ios::trunc);
+    f.write(reinterpret_cast<const char*>(out.data()), static_cast<std::streamsize>(n));
+    if (!f) return false;
+    f.close();
+    std::filesystem::remove(raw_path);
+    std::cout << "  [+] Shipped " << raw_path << ".zst (" << raw.size() << " -> " << n << " bytes)\n";
+    return true;
+}
+
 int DoBatchBake(std::string cooked_maps_dir,
                 std::string out_dir,
                 const std::string& maps_dir,
-                const std::string& inv_path) {
+                const std::string& inv_path,
+                bool ship = false) {
     if (cooked_maps_dir.empty()) {
         if (std::filesystem::exists("/home/odeyin/Documents/AA3/AA3/AA3Game/CookedPC/Maps")) {
             cooked_maps_dir = "/home/odeyin/Documents/AA3/AA3/AA3Game/CookedPC/Maps";
@@ -642,6 +730,7 @@ int DoBatchBake(std::string cooked_maps_dir,
 
         int res = DoBake(base_pkg.string(), sub_pkg.empty() ? "" : sub_pkg.string(),
                          folder_path.string(), out_path, maps_dir, "", "", inv_path);
+        if (res == 0 && ship && !ShipBundle(out_path)) res = 1;
         if (res == 0) {
             succeeded++;
         } else {
@@ -656,6 +745,59 @@ int DoBatchBake(std::string cooked_maps_dir,
 }
 
 } // namespace
+
+// 1:1 check of the shipped bundles against an AA3 install: re-bake every
+// map from its cooked packages and compare each section byte for byte.
+int DoVerify(const std::string& cooked_maps_dir, const std::string& bundles_dir,
+             const std::string& maps_dir, const std::string& inv_path) {
+    const std::filesystem::path tmp = std::filesystem::temp_directory_path() / "aa3_mapbake_verify";
+    std::filesystem::remove_all(tmp);
+    {
+        // The re-bake's own progress output isn't the report.
+        std::streambuf* old = std::cout.rdbuf(nullptr);
+        DoBatchBake(cooked_maps_dir, tmp.string(), maps_dir, inv_path);
+        std::cout.rdbuf(old);
+    }
+    auto section_name = [](uint32_t t) { return std::string(SectionTypeName(static_cast<SectionType>(t))); };
+    int ok = 0, bad = 0;
+    for (const auto& target : kRetailMaps) {
+        const std::string stem = std::filesystem::path(target.base_map).stem().string();
+        std::filesystem::path shipped = std::filesystem::path(bundles_dir) / (stem + ".aa3map.zst");
+        if (!std::filesystem::exists(shipped)) shipped = std::filesystem::path(bundles_dir) / (stem + ".aa3map");
+        const std::filesystem::path fresh = tmp / (stem + ".aa3map");
+        MapBundle a, b;
+        if (!std::filesystem::exists(shipped) || !a.Load(shipped.string())) {
+            std::cout << "MISSING  " << stem << " (no shipped bundle)\n"; ++bad; continue;
+        }
+        if (!std::filesystem::exists(fresh) || !b.Load(fresh.string())) {
+            std::cout << "NOSOURCE " << stem << " (couldn't re-bake from " << cooked_maps_dir << ")\n"; ++bad; continue;
+        }
+        std::vector<std::string> diffs;
+        if (a.MapName() != b.MapName() || a.GameModeLevel() != b.GameModeLevel()) diffs.push_back("header");
+        std::vector<uint32_t> types;
+        for (const auto& e : a.Sections()) types.push_back(e.type);
+        for (const auto& e : b.Sections())
+            if (std::find(types.begin(), types.end(), e.type) == types.end()) types.push_back(e.type);
+        for (uint32_t t : types) {
+            size_t na = 0, nb = 0;
+            const uint8_t* pa = a.GetSectionData(static_cast<SectionType>(t), &na);
+            const uint8_t* pb = b.GetSectionData(static_cast<SectionType>(t), &nb);
+            if (!pa || !pb || na != nb || std::memcmp(pa, pb, na) != 0) diffs.push_back(section_name(t));
+        }
+        if (diffs.empty()) {
+            std::cout << "OK       " << stem << " (" << types.size() << " sections identical)\n";
+            ++ok;
+        } else {
+            std::cout << "DIFF     " << stem << ":";
+            for (const auto& d : diffs) std::cout << " " << d;
+            std::cout << "\n";
+            ++bad;
+        }
+    }
+    std::filesystem::remove_all(tmp);
+    std::cout << "\n" << ok << " of " << (ok + bad) << " shipped bundles match the install 1:1\n";
+    return bad == 0 ? 0 : 1;
+}
 
 int main(int argc, char** argv) {
     LOG_INIT();
@@ -699,6 +841,8 @@ int main(int argc, char** argv) {
                 spawn1 = argv[++i];
             } else if (arg == "--inventory" && i + 1 < argc) {
                 inv_path = argv[++i];
+            } else if (arg == "--quantized") {
+                g_quantize = true;
             } else {
                 std::cerr << "Unknown argument: " << arg << "\n";
                 PrintUsage();
@@ -718,10 +862,13 @@ int main(int argc, char** argv) {
         std::string out_dir = "data/maps";
         std::string maps_dir = "config/maps";
         std::string inv_path = "config/spawn_inventory.json";
+        bool ship = false;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
-            if (arg == "--cooked-maps" && i + 1 < argc) {
+            if (arg == "--ship") {
+                ship = true;
+            } else if (arg == "--cooked-maps" && i + 1 < argc) {
                 cooked_maps_dir = argv[++i];
             } else if (arg == "--out-dir" && i + 1 < argc) {
                 out_dir = argv[++i];
@@ -729,6 +876,8 @@ int main(int argc, char** argv) {
                 maps_dir = argv[++i];
             } else if (arg == "--inventory" && i + 1 < argc) {
                 inv_path = argv[++i];
+            } else if (arg == "--quantized") {
+                g_quantize = true;
             } else {
                 std::cerr << "Unknown argument: " << arg << "\n";
                 PrintUsage();
@@ -736,7 +885,25 @@ int main(int argc, char** argv) {
             }
         }
 
-        return DoBatchBake(cooked_maps_dir, out_dir, maps_dir, inv_path);
+        return DoBatchBake(cooked_maps_dir, out_dir, maps_dir, inv_path, ship);
+    } else if (mode == "--verify") {
+        std::string cooked_maps_dir;
+        std::string bundles_dir = "data/maps";
+        std::string maps_dir = "config/maps";
+        std::string inv_path = "config/spawn_inventory.json";
+        for (int i = 2; i < argc; ++i) {
+            std::string arg = argv[i];
+            if (arg == "--cooked-maps" && i + 1 < argc) cooked_maps_dir = argv[++i];
+            else if (arg == "--bundles" && i + 1 < argc) bundles_dir = argv[++i];
+            else if (arg == "--maps-dir" && i + 1 < argc) maps_dir = argv[++i];
+            else if (arg == "--inventory" && i + 1 < argc) inv_path = argv[++i];
+            else {
+                std::cerr << "Unknown argument: " << arg << "\n";
+                PrintUsage();
+                return 1;
+            }
+        }
+        return DoVerify(cooked_maps_dir, bundles_dir, maps_dir, inv_path);
     } else if (mode == "--pack-loose") {
         std::string map_name;
         std::string gametype_level;

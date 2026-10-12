@@ -6,9 +6,11 @@
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <iterator>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <zstd.h>
 
 #include "util/crc.h"
 #include "util/json.h"
@@ -90,8 +92,59 @@ void MapBundle::Close() {
     loaded_ = false;
 }
 
+namespace {
+
+// A shipped bundle is the .aa3map compressed whole with zstd (data/maps/
+// <map>.aa3map.zst, `zstd -19 --long=27`); decompressed into memory.
+bool ReadZstdFile(const std::string& path, std::vector<uint8_t>& out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::vector<char> in((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    ZSTD_DCtx* dctx = ZSTD_createDCtx();
+    if (!dctx) return false;
+    ZSTD_DCtx_setParameter(dctx, ZSTD_d_windowLogMax, 31);
+    const unsigned long long known = ZSTD_getFrameContentSize(in.data(), in.size());
+    out.clear();
+    if (known != ZSTD_CONTENTSIZE_UNKNOWN && known != ZSTD_CONTENTSIZE_ERROR)
+        out.reserve(static_cast<size_t>(known));
+    std::vector<uint8_t> chunk(ZSTD_DStreamOutSize());
+    ZSTD_inBuffer ib{in.data(), in.size(), 0};
+    size_t ret = 1;
+    while (ib.pos < ib.size) {
+        ZSTD_outBuffer ob{chunk.data(), chunk.size(), 0};
+        ret = ZSTD_decompressStream(dctx, &ob, &ib);
+        if (ZSTD_isError(ret)) {
+            LOG_ERROR("MapBundle: %s: zstd: %s", path.c_str(), ZSTD_getErrorName(ret));
+            ZSTD_freeDCtx(dctx);
+            return false;
+        }
+        out.insert(out.end(), chunk.data(), chunk.data() + ob.pos);
+    }
+    ZSTD_freeDCtx(dctx);
+    if (ret != 0) {
+        LOG_ERROR("MapBundle: %s: truncated zstd stream", path.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool EndsWith(const std::string& s, const std::string& suffix) {
+    return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+}  // namespace
+
 bool MapBundle::Load(const std::string& path) {
     Close();
+    if (EndsWith(path, ".zst")) {
+        if (!ReadZstdFile(path, owned_buffer_)) {
+            LOG_WARN("MapBundle: unable to read %s", path.c_str());
+            return false;
+        }
+        data_ = owned_buffer_.data();
+        size_ = owned_buffer_.size();
+        return ParseAndValidate(data_, size_, path);
+    }
     int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) {
         LOG_WARN("MapBundle: unable to open file %s", path.c_str());

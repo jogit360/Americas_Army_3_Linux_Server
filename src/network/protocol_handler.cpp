@@ -924,6 +924,50 @@ void ProtocolHandler::DecodeActorBunch(uint32_t client_id, uint32_t ch_index,
         uint32_t weapon_ch = 0;
         if (reader.ReadBit() && reader.ReadBit()) weapon_ch = reader.ReadIntMax(0x800);  // Send, bDynamic
         if (weapon_ch == 0 || weapon_ch == sess.current_weapon_ch) return;
+        auto on_channel = [&](uint32_t ch) -> const game::ServerRoundActor* {
+            for (const game::ServerRoundActor* x : sess.data_actors) {
+                auto x_it = sess.actor_channel.find(x);
+                if (x_it != sess.actor_channel.end() && x_it->second == ch) return x;
+            }
+            return nullptr;
+        };
+        game::ServerPlayerController* owner = world_ ? world_->FindPlayerController(client_id) : nullptr;
+        game::ServerPawn* own_pawn = owner ? owner->pawn : nullptr;
+        const uint32_t old_ch = sess.current_weapon_ch;
+        const uint8_t new_grenade = own_pawn ? world_->GrenadeInventoryType(own_pawn, on_channel(weapon_ch)) : 0;
+        const uint8_t old_grenade = own_pawn && old_ch ? world_->GrenadeInventoryType(own_pawn, on_channel(old_ch)) : 0;
+        // A grenade into the hand (retail t=444.92; doc sec 37): its HUD
+        // count, then the change of weapon. None left: the weapon in hand
+        // stays, said back so the client stops asking.
+        if (new_grenade) {
+            util::BitWriter d;
+            if (!world_->TakeGrenade(own_pawn, on_channel(weapon_ch))) {
+                if (old_ch) {
+                    BuildClientNotifyChangedWeaponRPC(d, old_ch);
+                    SendActorUpdateBunch(client_id, kPCChannel, d);
+                }
+                return;
+            }
+            if (old_grenade) BuildClientAdvancedInventoryUpdateGrenadeCountsRPC(d, old_grenade, true);
+            BuildClientSendHUDNotifyChangeInventoryCountRPC(d, new_grenade, -1);
+            BuildClientAdvancedInventoryUpdateGrenadeCountsRPC(d, new_grenade, false);
+            BuildClientNotifyChangedWeaponRPC(d, weapon_ch, old_ch);
+            SendActorUpdateBunch(client_id, kPCChannel, d);
+            sess.current_weapon_ch = weapon_ch;
+            LOG_INFO("Client %u: grenade in hand -> ch %u", client_id, weapon_ch);
+            return;
+        }
+        // Back to the rifle from a grenade, thrown or not (retail t=450.68).
+        if (old_grenade) {
+            world_->PutAwayGrenade(own_pawn, on_channel(weapon_ch));
+            util::BitWriter d;
+            BuildClientAdvancedInventoryUpdateGrenadeCountsRPC(d, old_grenade, true);
+            BuildClientNotifyChangedWeaponRPC(d, weapon_ch, old_ch);
+            SendActorUpdateBunch(client_id, kPCChannel, d);
+            sess.current_weapon_ch = weapon_ch;
+            LOG_INFO("Client %u: grenade away, weapon -> ch %u", client_id, weapon_ch);
+            return;
+        }
         sess.current_weapon_ch = weapon_ch;
         util::BitWriter d;
         BuildClientNotifyChangedWeaponRPC(d, weapon_ch);
@@ -992,6 +1036,41 @@ void ProtocolHandler::DecodeActorBunch(uint32_t client_id, uint32_t ch_index,
                 }
             } else {
                 return;                                     // unknown: rest skipped via BDB
+            }
+        }
+        return;
+    }
+    // Grenade in hand (doc sec 37): Weapon.ServerStartFire (31) pulls the
+    // pin, ServerStopFire (32) throws, AA_ThrowWeapon.CookIt (59) cooks --
+    // answered with ClientStartCookingDelayedRestoreTimer (63), retail
+    // t=447.84 -- and SwitchThrowType (62) picks the underhand throw.
+    // ServerCleanUpAfterThrow (60) / ServerPutDownWeapon (65): nothing to do.
+    for (const game::ServerRoundActor* a : sess.data_actors) {
+        if (a->class_name.rfind("AA_ThrowWeapon", 0) != 0) continue;
+        auto ch_it = sess.actor_channel.find(a);
+        if (ch_it == sess.actor_channel.end() || ch_it->second != ch_index) continue;
+        game::ServerPlayerController* pc = world_ ? world_->FindPlayerController(client_id) : nullptr;
+        game::ServerPawn* pawn = pc ? pc->pawn : nullptr;
+        using GI = game::World::GrenadeInput;
+        while (reader.GetPos() < bunch_end) {
+            const uint32_t idx = reader.ReadIntMax(a->max_index);
+            if (!pawn) continue;
+            if (idx == 31) {
+                world_->GrenadeAction(pawn, a, GI::kPullPin);
+            } else if (idx == 32) {
+                world_->GrenadeAction(pawn, a, GI::kRelease);
+            } else if (idx == 59) {
+                const bool was = pawn->cooking;
+                world_->GrenadeAction(pawn, a, GI::kCook);
+                if (!was && pawn->cooking) {
+                    util::BitWriter d;
+                    d.WriteIntMax(63, a->max_index);    // ClientStartCookingDelayedRestoreTimer()
+                    SendActorUpdateBunch(client_id, ch_index, d);
+                }
+            } else if (idx == 62) {
+                world_->GrenadeAction(pawn, a, GI::kSwitchThrowType);
+            } else if (idx != 60 && idx != 65) {
+                return;                                 // unknown: rest skipped via BDB
             }
         }
         return;
@@ -1309,6 +1388,69 @@ void ProtocolHandler::ApplyPcRpc(uint32_t client_id, ClientSession& sess,
             // replication tick (doc sec 28).
             break;
         }
+        case PcRpc::kServerES2Use: {
+            // Perk pick-up (doc sec 37.6): the object is one of this
+            // connection's channels.
+            const game::ServerActor* obj = nullptr;
+            if (p[0].dynamic)
+                for (const auto& kvp : sess.actor_channel)
+                    if (kvp.second == static_cast<uint32_t>(p[0].i)) obj = kvp.first;
+            bool ok = pc && world_ && obj && world_->UseES2Object(*pc, obj);
+            LOG_INFO("RX client %u: ServerES2Use(ch %d) -> %s", client_id, p[0].i, ok ? "taken" : "nothing");
+            break;
+        }
+        case PcRpc::kServerES2Active:
+            break;                                  // the report itself isn't modelled
+        // IFAK treatment (retail capture 2026-10-11; doc sec 39). Start:
+        // SetTreatmentOnRequestingClient(patient), weapon to low ready;
+        // stop: SetTreatmentOnRequestingClient(None), weapon back up.
+        case PcRpc::kServerStartTreatment: {
+            game::ServerPawn* patient = pc && pc->pawn && world_ ? world_->StartTreatment(pc->pawn, p[0].s) : nullptr;
+            util::BitWriter d;
+            d.WriteIntMax(rep::PC::SetTreatmentOnRequestingClient, kPCMaxIndex);
+            auto ch_it = patient ? sess.actor_channel.find(patient) : sess.actor_channel.end();
+            WriteRPCObjectParam(d, ch_it != sess.actor_channel.end() ? ch_it->second : 0);
+            if (patient) {
+                BuildNotifyWeaponReadyChangeRPC(d, false);
+                BuildNotifyTacticalCombatPostureChangeRPC(d, true);
+            }
+            SendActorUpdateBunch(client_id, kPCChannel, d);
+            LOG_INFO("RX client %u: ServerStartTreatment(%s) -> %s", client_id, p[0].s.c_str(),
+                     patient ? "treating" : "refused");
+            break;
+        }
+        case PcRpc::kServerStartPassiveTreatment: {
+            bool ok = pc && pc->pawn && world_ && world_->StartPassiveTreatment(pc->pawn);
+            LOG_INFO("RX client %u: ServerStartPassiveTreatment -> %s", client_id, ok ? "on" : "nothing to treat");
+            break;
+        }
+        case PcRpc::kServerStopTreatment: {
+            if (pc && pc->pawn && world_) world_->StopTreatment(pc->pawn);
+            util::BitWriter d;
+            d.WriteIntMax(rep::PC::SetTreatmentOnRequestingClient, kPCMaxIndex);
+            WriteRPCObjectParam(d, 0);
+            BuildNotifyWeaponReadyChangeRPC(d, true);
+            BuildNotifyTacticalCombatPostureChangeRPC(d, true);
+            SendActorUpdateBunch(client_id, kPCChannel, d);
+            break;
+        }
+        case PcRpc::kServerGiveActiveTreatment: {
+            bool ok = pc && pc->pawn && world_ && world_->GiveActiveTreatment(pc->pawn, p[0].s, p[2].s);
+            LOG_INFO("RX client %u: ServerGiveActiveTreatment(%s, %s) -> %s", client_id, p[0].s.c_str(),
+                     p[2].s.c_str(), ok ? "done" : "nothing done");
+            break;
+        }
+        case PcRpc::kServerWeaponRaise:
+        case PcRpc::kSendCommoRequest:
+            break;                                  // weapon state / medic call audio: client-side
+        case PcRpc::kServerSetRailMod: {
+            // Role menu rail picks (retail frames 218/234; doc sec 37). The
+            // PRI's mriPrimaryWeaponOneMods goes out with the next tick.
+            bool ok = pc && world_ && world_->SetRailMod(*pc, p[0].s, p[1].s, p[2].i);
+            LOG_INFO("RX client %u: ServerSetRailMod(%s, %s, %d) -> %s", client_id, p[0].s.c_str(),
+                     p[1].s.c_str(), p[2].i, ok ? "set" : "refused");
+            break;
+        }
         case PcRpc::kServerSetPlayerReady:
             if (pc && world_) world_->SetPlayerReady(*pc, p[0].i != 0);
             LOG_INFO("RX client %u: ServerSetPlayerReady(%d)", client_id, p[0].i);
@@ -1361,6 +1503,10 @@ void ProtocolHandler::PossessPawn(uint32_t client_id, ClientSession& sess,
     sess.hit_sent = pawn.hit_serial;
     sess.incap_sent = pawn.incap_serial;
     sess.sling_sent = pawn.sling_serial;
+    sess.switch_best_sent = pawn.switch_best_serial;
+    sess.recap_sent = pawn.recap_serial;
+    sess.weapon_restore_sent = pawn.weapon_restore_serial;
+    sess.holder_died_sent = pawn.holder_died_serial;
     sess.vault_sent = pawn.vault_finish_serial;
     sess.breath_end_sent = pawn.breath_end_serial;
     util::BitWriter d;
@@ -1459,7 +1605,8 @@ void ProtocolHandler::OpenMatchActors(uint32_t client_id, ClientSession& sess) {
     if (!world_ || sess.match_opened) return;
     sess.match_opened = true;
     sess.match_actor_serial_seen = world_->MatchActorSerial();
-    for (const auto& a : world_->MatchActors()) OpenDataActor(client_id, sess, a.get());
+    for (const auto& a : world_->MatchActors())
+        if (!a->gone) OpenDataActor(client_id, sess, a.get());
 }
 
 void ProtocolHandler::OpenRoundActors(uint32_t client_id, ClientSession& sess) {
@@ -1760,6 +1907,12 @@ void ProtocolHandler::OpenInitialActorChannels(uint32_t client_id) {
         // channel-open carries just the ObjectIndex + transient preamble.
         open_for_actor(5, pc->mos_qual, "MOSQualificationBCT (this client)",
                        kMOSQualificationBCTMaxIndex);
+        // Retail opens the player's whole MOS set together (same empty
+        // payload); Combat Medic is what lets the client treat (sec 39.7).
+        for (const game::ServerMOSQualificationBCT* q : pc->extra_mos_quals)
+            if (sess.next_free_channel < 0x800)
+                open_for_actor(sess.next_free_channel++, q, "MOSQualification (this client)",
+                               kMOSQualificationBCTMaxIndex);
     }
 
     std::array<util::BitWriter, 4> team_payloads;
@@ -2042,6 +2195,60 @@ void ProtocolHandler::Tick(uint64_t now_us) {
                 d.WriteIntMax(101, rep::Pawn::kMaxIndex);   // ClientSlingWeapon()
                 SendActorUpdateBunch(kv.first, kOwnPawnChannel, d);
             }
+            // After a cook (doc sec 37): the server puts the rifle back in
+            // hand -- InventoryManager.SetCurrentWeapon(DesiredWeapon) (24),
+            // retail t=453.94 -- and, if the grenade cooked off in hand,
+            // AA_ThrowWeapon.ClientHolderDied() (64).
+            if (own->weapon_restore_serial != s.weapon_restore_sent) {
+                auto im_it = s.actor_channel.find(own->inv_manager);
+                auto rifle_it = s.actor_channel.find(own->rifle);
+                if (im_it != s.actor_channel.end() && rifle_it != s.actor_channel.end() &&
+                    ChannelReady(s, im_it->second)) {
+                    s.weapon_restore_sent = own->weapon_restore_serial;
+                    util::BitWriter d;
+                    d.WriteIntMax(24, s.channel_max_index[im_it->second]);
+                    WriteRPCObjectParam(d, rifle_it->second);
+                    SendActorUpdateBunch(kv.first, im_it->second, d);
+                    s.current_weapon_ch = rifle_it->second;
+                }
+            }
+            if (own->holder_died_serial != s.holder_died_sent) {
+                s.holder_died_sent = own->holder_died_serial;
+                auto g_it = s.actor_channel.find(own->holder_died_grenade);
+                if (g_it != s.actor_channel.end()) {
+                    util::BitWriter d;
+                    d.WriteIntMax(64, s.channel_max_index[g_it->second]);
+                    SendActorUpdateBunch(kv.first, g_it->second, d);
+                }
+            }
+            // Revived (retail t=204.78, doc sec 39): ClientRecapacitate() on
+            // the pawn; on the PC the IFAK used, back out of the incapacitated
+            // view and the weapon back in hand.
+            if (own->recap_serial != s.recap_sent && ChannelReady(s, kOwnPawnChannel) &&
+                ChannelReady(s, kPCChannel)) {
+                s.recap_sent = own->recap_serial;
+                util::BitWriter pw;
+                pw.WriteIntMax(110, rep::Pawn::kMaxIndex);          // AA_Pawn.ClientRecapacitate()
+                SendActorUpdateBunch(kv.first, kOwnPawnChannel, pw);
+                util::BitWriter d;
+                if (own->recap_used_own_ifak) {
+                    d.WriteIntMax(rep::AGP_PC::ClientNotifyDiscardInventory, kPCMaxIndex);
+                    WriteRPCByteEnumParam(d, 7, 5);                 // EIT_MISC_IFAK
+                }
+                d.WriteIntMax(rep::AGP_PC::ClientNotifyIncapacitated, kPCMaxIndex);
+                WriteRPCBoolParam(d, false);                        // bIncapacitateStart
+                WriteRPCStrParam(d, own->incap_instigator);
+                BuildClientSetCameraModeRPC(d, "FirstPerson");
+                BuildNotifyPostureChangeRPC(d, "EndCrouch", true);
+                BuildClientSwitchToBestWeaponRPC(d, true);
+                SendActorUpdateBunch(kv.first, kPCChannel, d);
+            }
+            if (own->switch_best_serial != s.switch_best_sent && ChannelReady(s, kPCChannel)) {
+                s.switch_best_sent = own->switch_best_serial;
+                util::BitWriter d;
+                BuildClientSwitchToBestWeaponRPC(d, true);   // retail t=439.20, after the throw
+                SendActorUpdateBunch(kv.first, kPCChannel, d);
+            }
             if (own->vault_finish_serial != s.vault_sent && ChannelReady(s, kOwnPawnChannel)) {
                 s.vault_sent = own->vault_finish_serial;
                 util::BitWriter d;
@@ -2239,6 +2446,41 @@ void ProtocolHandler::Tick(uint64_t now_us) {
                     if (EncodeDataFields(d, team->round_fields, kTeamInfoMaxIndex, s.team_round_sent[i],
                                          MakeRepContext(s, ch, /*for_owner=*/false)) > 0) {
                         SendActorUpdateBunch(kv.first, ch, d);
+                        sent_update = true;
+                    }
+                }
+            }
+            // Grenades (doc sec 37): a thrown grenade's replacement opens to
+            // its owner; thrown grenades open to everyone in the round and
+            // close at their LifeSpan, as retail.
+            if (world_ && s.round_opened) {
+                const game::ServerPawn* own = s.possessed_pawn;
+                if (own && !own->destroyed && !own->torn_off && s.actor_channel.count(own))
+                    if (const auto* inv = world_->PawnInventory(own))
+                        for (const auto& it : *inv) {
+                            const bool open = s.actor_channel.count(it.get()) != 0;
+                            if (!it->gone && !open) {
+                                OpenDataActor(kv.first, s, it.get());
+                                sent_update = true;
+                            } else if (it->gone && open) {          // used up (an IFAK)
+                                CloseDataActor(kv.first, s, it.get());
+                                sent_update = true;
+                            }
+                        }
+                // An emptied ES2 perk is destroyed (AA_ES2InstaPerk.PerformES2Use).
+                if (s.match_opened)
+                    for (const auto& a : world_->MatchActors())
+                        if (a->gone && s.actor_channel.count(a.get())) {
+                            CloseDataActor(kv.first, s, a.get());
+                            sent_update = true;
+                        }
+                for (const auto& g : world_->ThrownGrenades()) {
+                    const bool open = s.actor_channel.count(g.actor.get()) != 0;
+                    if (!g.gone && !open) {
+                        OpenDataActor(kv.first, s, g.actor.get());
+                        sent_update = true;
+                    } else if (g.gone && open) {
+                        CloseDataActor(kv.first, s, g.actor.get());
                         sent_update = true;
                     }
                 }

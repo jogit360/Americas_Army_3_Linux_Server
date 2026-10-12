@@ -80,8 +80,10 @@ static_assert(sizeof(SectionEntry) == 32, "SectionEntry must be 32 bytes");
 
 ### 3.1 Loading Priority in `Engine::Initialize`
 When loading a map (e.g. `MapName = "Bridge_night_clear"`):
-1. **Unified Bundle Priority**: Checks for `data/maps/<MapName>.aa3map`.
-   - If present, invokes `MapBundle::Load()`. The container is memory-mapped via POSIX `mmap(..., MAP_SHARED)`.
+1. **Unified Bundle Priority**: Checks for `data/maps/<MapName>.aa3map` (a local re-bake), then the
+   shipped `data/maps/<MapName>.aa3map.zst`.
+   - `MapBundle::Load()` memory-maps an `.aa3map` via POSIX `mmap(..., MAP_SHARED)`, or decompresses an
+     `.aa3map.zst` into memory (about 0.1 s for the largest map).
    - Header magic and version are validated.
    - Every section's CRC32 is checked against its payload.
    - `MapManifest` is constructed from Section 1 (`kManifest`).
@@ -116,8 +118,14 @@ The offline compiler `aa3_mapbake` (`tools/map_bake/main.cpp`) packages map asse
 ### 4.1 Usage
 
 ```bash
-# Inspect an existing bundle
-build/aa3_mapbake --info data/maps/Bridge_night_clear.aa3map
+# Inspect an existing bundle (.aa3map or the shipped .aa3map.zst)
+build/aa3_mapbake --info data/maps/Bridge_night_clear.aa3map.zst
+
+# Re-create the shipped bundles from an AA3 install (lossless, compressed)
+build/aa3_mapbake --batch-bake --ship --cooked-maps <AA3>/AA3Game/CookedPC/Maps
+
+# Prove the shipped bundles are 1:1 with an install (exit 1 on any difference)
+build/aa3_mapbake --verify --cooked-maps <AA3>/AA3Game/CookedPC/Maps
 
 # Compile a bundle from loose data
 build/aa3_mapbake --pack-loose --map Bridge_night_clear \
@@ -338,7 +346,57 @@ Phase 4 eliminates all packet capture and loose JSON dependencies by implementin
 
 ---
 
-## 10. Modernization Roadmap & Status
+## 10. Shipped Maps: the Bundles Are Part of the Server (2026-10-12)
+
+All 18 retail maps ship in the repository as `data/maps/<map>.aa3map.zst`: 49 MB in git,
+244 MB uncompressed. Neither the server, nor `ctest`, nor the scripted clients need an AA3
+install. Players still need the game itself: the client loads its own copy of each map,
+and checks the server's package list against it.
+
+**1:1 with the original maps.** A shipped bundle holds everything the server takes from a map,
+exactly as the packages have it:
+- **Manifest**: USES packages with GUIDs and generations, and net object counts.
+- **Collision**: lossless `AA3COL03`, the packages' float vertices. Quantized `AA3COL04` is now
+  opt-in (`--quantized`), because its ~1 cm vertex error isn't 1:1.
+- **Placed actors**: NetIndex and MaxIndex for each.
+- **Mission**: roles, join and match actors, and the rules.
+- **Also**: windows, spawns and the spawn kit.
+
+The bake is deterministic: two bakes of the same install are byte-identical. `aa3_mapbake --verify`
+re-bakes every map from an install and compares each shipped bundle with it, section by
+section, byte for byte. Result on 2026-10-12: **18 of 18 identical**. The check is shown to catch
+differences: run against the older quantized bundles, it flags every map's Collision section.
+
+**Format.** Each file is the `AA3MAP01` container, compressed whole with zstd (level 19,
+128 MB long-distance window, content checksum), so it can also be inspected with
+`zstd -d`. A local uncompressed `<map>.aa3map` takes precedence and stays git-ignored.
+
+| Map | Bundle (MB) | Shipped .zst (MB) |
+|---|---|---|
+| Airfield_day_cloudy | 16.6 | 4.0 |
+| Alley_day_cloudy / foggy | 11.4 | 3.3 |
+| Bridge_day_fog / night_clear | 18.9 | 4.7 |
+| Classroom_CLS | 0.8 | 0.2 |
+| ConexMOUT | 7.4 | 1.8 |
+| Impact_day_cloudy | 6.5 | 2.1 |
+| Leavenworth | 1.8 | 0.4 |
+| MultiRange | 8.1 | 1.9 |
+| obstaclecourse | 7.3 | 1.4 |
+| Pipeline_dawn_clear | 7.5 | 2.1 |
+| Ranch_day_fog / RanchAI_day_fog | 34.1 / 34.8 | 2.8 / 3.1 |
+| shantytown_day_rain | 15.8 | 4.1 |
+| short-range | 25.1 | 3.4 |
+| Stronghold_night_clear | 15.3 | 4.2 |
+| VRS | 1.7 | 0.6 |
+| **Total (18)** | **244** | **49** |
+
+**Tests.** `map_bundle_validation_test` and `mission_extraction_test` read the shipped bundles.
+`collision_parity_test` checks the lossless collision against the legacy flat collision:
+0 mismatches over 2,000 rays. The tests that need an install (`package_extractor_test`,
+`collision_quant_test`, and `collision_parity_test`'s legacy input) report as skipped
+without one.
+
+## 11. Modernization Roadmap & Status
 
 | Phase | Milestone | Status | Key Deliverable |
 |---|---|---|---|
@@ -347,4 +405,5 @@ Phase 4 eliminates all packet capture and loose JSON dependencies by implementin
 | **Phase 2** | **Direct-From-Package Ingestion** | **COMPLETE** | C++ `PackageExtractor`, no Python dependencies, 58ms bake time, 100% ray trace parity. |
 | **Phase 3** | **Quantized Mesh Compression (`AA3COL04`)** | **COMPLETE** | 16-bit vertex quantization, packed uint16 indices, 75% mesh geometry reduction, 0 ray mismatches. |
 | **Phase 4** | **Native Mission & Sublevel Ingestion** | **COMPLETE** | Full Level.Actors + RoundActors extraction (13 roles/team), Join/Match ES2 actors, mission rules for all 18 maps. |
-| **Retail Maps** | **Complete Retail Batch Bake** | **COMPLETE** | All 18 base retail maps baked into `data/maps/*.aa3map` (195 MB total vs 1.2 GB cooked packages). Server `--map` CLI tested and verified. |
+| **Retail Maps** | **Complete Retail Batch Bake** | **COMPLETE** | All 18 base retail maps baked from the cooked packages. Server `--map` CLI tested and verified. |
+| **Shipped Maps** | **Bundles in the repository, 1:1** | **COMPLETE** | `data/maps/*.aa3map.zst`: 49 MB, lossless, `aa3_mapbake --verify` 18/18 identical to an install (sec 10). |

@@ -2,8 +2,10 @@
 
 //Currently THIS IS STILL A WORK IN PROGRESS -- tested with the real AA3 client
 //(Wine) and with scripted bot clients, not yet with a full server of players.
-//A player can join, pick a team and role, spawn on Bridge, move, shoot, open
-//doors, vault, climb, get wounded/incapacitated, and play full rounds and matches.
+//A player can join, pick a team and role, spawn on Bridge, move, shoot every
+//role's rifle with its sights, throw and cook grenades, pick up ES2 perks, open
+//doors, vault, climb, get wounded, bleed, be treated or revived by a teammate's
+//IFAK, and play full rounds and matches.
 
 A Linux dedicated server for America's Army 3 (v3.3.1), reimplemented from
 the retail server's network traffic, the cooked game packages and the
@@ -15,8 +17,10 @@ original UnrealScript source that ships inside them.
 - Linux x86_64, GCC 10+ or Clang 12+, CMake 3.16+
 - Steamworks SDK in `external/steamworks_sdk_linux/` (only for Steam mode;
   `--standalone` runs without it)
-- A legit AA3 install: the map data in `config/maps/` and `data/collision/`
-  is generated from its cooked packages
+- libzstd-dev, liblzo2-dev, OpenSSL dev headers
+- **No AA3 install is needed to run the server.** All 18 retail maps ship in
+  `data/maps/` as lossless, compressed bundles (`<map>.aa3map.zst`, 49 MB),
+  checked 1:1 against the original packages. Players still need the game.
 
 ### Build & Run
 ```bash
@@ -31,7 +35,7 @@ browser. `--steam` (default) also advertises to the Steam master server.
 
 ## Project Status
 
-**Playable across all 18 retail maps** with zero dependencies on client packages. Last updated 2026-10-10.
+**Playable across all 18 retail maps** with zero dependencies on client packages. Last updated 2026-10-12.
 
 | Area | Status |
 |------|--------|
@@ -42,15 +46,21 @@ browser. `--steam` (default) also advertises to the Steam master server.
 | LAN browser beacon (in-game server list + Join) | done |
 | Team join, role selection, deployment, spawn with per-role kits | done (13 roles per team across all maps) |
 | Movement, stance, sprint, vault/mantle, ladders, hold breath | done |
-| Map representation: Modernized Unified Map Bundles (`.aa3map`, `AA3MAP01`) | done (zero-copy mmap, all 18 maps baked, 195 MB total vs 1.2 GB) |
-| Map collision: Quantized instanced mesh collision (`AA3COL04`) + BVH bullet traces | done (16-bit vertices, packed uint16 indices, 100% ray parity) |
+| Map representation: Modernized Unified Map Bundles (`AA3MAP01`), shipped in the repo as `data/maps/<map>.aa3map.zst` | done (all 18 maps, 49 MB, lossless; `aa3_mapbake --verify` 18/18 byte-identical to a fresh bake from the install) |
+| Map collision: lossless instanced mesh collision (`AA3COL03`) + BVH bullet traces | done (the packages' float vertices; quantized `AA3COL04` optional) |
 | Mission & Gameplay data: native extraction of map actors, round roles, rules | done (no capture JSON dependencies) |
-| Weapons: fire modes, ammo, reloads; breakable windows; doors; ES2 objects | done |
-| Damage by hit zone, incapacitation (bleed-out, withdraw), death | done |
+| Weapons: every role's rifle (M4A1, M16A4, M16 DMR, M249) with its fire modes, magazine size, ammo, reloads | done |
+| Rail mods: iron, CCO, ACOG variants, M95 light, XM320 mount (`ServerSetRailMod`) | done |
+| Hand grenades: M67 frag, M83 smoke, M106, M84 stun, AN-M14 incendiary; take out, pin, cook, throw, fuse, blast / smoke / burn | done (real-client tested) |
+| ES2 perks: grenade and magazine pickups | done |
+| Friend/enemy look: the other team appears as the enemy force from each side | done |
+| Breakable windows, doors, ES2 objects | done |
+| Damage by hit zone; wounds that bleed out to a HealthTarget (43% at once / 57% bled at 1.2 hp/s); incapacitation (bleed-out, withdraw); death | done (retail-matched) |
 | Round end: elimination, extraction, time limit; scoreboard; next round; 6-round match | done (bot-tested) |
 | Multi-map CLI: `--map <name>` / `-m <name>` argument | done (supports all 18 retail maps) |
-| Medical treatment (healing a downed teammate) | **blocked**: client offers no treat option yet |
-| Dropped weapons, grenades, M320, TAH/VIP/other modes | not started |
+| IFAK treatment: passive treatment (stop bleeding, treat the wound), Saline revive of a downed teammate | done (bot-tested); real-client treat prompt fix awaiting test |
+| Other active treatments (tourniquet, dressings...) on a conscious soldier, multiple treaters, medic scoring/voice | not started |
+| Dropped weapons, M320 rounds, TAH/VIP/other modes | not started |
 
 Full write-up, section by section with the retail evidence:
 - [`docs/MAP_MODERNIZATION_SPEC.md`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/docs/MAP_MODERNIZATION_SPEC.md) (Unified Map Bundles, Quantized Collision, Mission Ingestion)
@@ -74,7 +84,9 @@ aa3-linux-server/
 │   │   ├── lan_beacon.cpp       LAN browser (ACPU beacon on 9000/9001)
 │   │   └── a2s_info.cpp         Steam A2S query replies
 │   ├── game/
-│   │   ├── world.cpp            game state: teams, rounds, spawns, weapons, damage
+│   │   ├── world.cpp            game state: teams, rounds, spawns, damage
+│   │   ├── weapons.cpp          role kits, rail mods, grenades, ES2 perks
+│   │   ├── medic.cpp            wounds, bleeding, IFAK treatment and revive
 │   │   ├── collision.cpp        BVH + line traces over the map's collision
 │   │   └── stats_export.cpp     stats JSON
 │   └── util/                    bit streams, JSON, CRC, logging
@@ -85,10 +97,12 @@ aa3-linux-server/
 │   └── maps/                    per-map data: *.aa3.manifest.json (USES), *.round.json,
 │                                *.join.json, *.match.json, *.map_actors.json,
 │                                *.windows.json, *.rules.json
-├── data/collision/              <map>.col, generated (git-ignored)
+├── data/maps/                   the 18 retail maps: <map>.aa3map.zst (shipped, lossless)
+├── data/collision/              <map>.col, legacy flat collision (git-ignored, dev tests)
 ├── tools/                       aa3_build_manifests (package dumper/manifest builder),
 │                                gen_rep_layout.py, stats_web.py ...
-├── tests/                       unit tests + fake_client.py / bot_client.py
+├── tests/                       unit tests + scripted clients (fake_client, bot_client,
+│                                grenade_client, medic_client, medic_scenario)
 └── docs/                        protocol and replication notes
 ```
 
@@ -117,10 +131,27 @@ SpawnPoint0 = "x,y,z,yaw"        # per team; defaults to retail's Black spawn
 StatsFile = ""                   # write player stats JSON here
 ```
 
-## Generating map data
+## Map data
 
-Per-map files come from a legit install's cooked packages (decompressed
-copies in `../clean_packages/`) and retail captures:
+The maps are part of the server: `data/maps/<map>.aa3map.zst` (tracked in
+git). The server loads them directly; an uncompressed `<map>.aa3map` beside one
+(a local re-bake) takes precedence. Rebuilding or checking them needs an AA3
+install:
+
+```bash
+# re-create the shipped bundles from the cooked packages
+build/aa3_mapbake --batch-bake --ship --cooked-maps <AA3>/AA3Game/CookedPC/Maps
+# prove the shipped bundles are 1:1 with the install (exit 1 on any difference)
+build/aa3_mapbake --verify --cooked-maps <AA3>/AA3Game/CookedPC/Maps
+# inspect one
+build/aa3_mapbake --info data/maps/Bridge_night_clear.aa3map.zst
+```
+See `docs/MAP_MODERNIZATION_SPEC.md` sec 10.
+
+### Legacy per-map files
+
+Before bundles, per-map files came from a legit install's cooked packages
+(decompressed copies in `../clean_packages/`) and retail captures:
 
 ```bash
 # collision
@@ -139,13 +170,24 @@ Round/join/match actor data: `aa3-tools/map_manifest/extract_round_actors.py`
 python3 tests/bot_client.py --port 8777 --team 1 --role 1 --no-fire           # a target
 python3 tests/bot_client.py --port 8777 --team 0 --role 1 --rate 2            # shoots the nearest soldier
 python3 tests/bot_client.py --port 8777 --team 0 --no-fire --goto=-6612,2900,40   # walks into Bridge's extraction zone
+python3 tests/bot_client.py --port 8777 --team 0 --no-fire --wander           # a teammate that walks around
+python3 tests/bot_client.py --retail Bot1 --port 8777 --team 0 --wander       # same, against a *retail* AA3 server
+# scripted end-to-end checks (each prints PASS/FAIL; start the server with short
+# RoleSelectionTime/DeploymentTime first)
+python3 tests/fake_client.py --port 8777 --round      # join, roles, spawn, a full round
+python3 tests/grenade_client.py --port 8777           # rail mods, grenades, cook-off, ES2 perks
+python3 tests/medic_client.py --port 8777             # 2 players: leg wound, treatment, head shot, Saline revive
+python3 tests/medic_scenario.py --port 8777           # 3 players: an enemy wounds, a medic treats and revives
 # decode a capture against a class's replication layout
 python3 ../aa3-tools/map_manifest/decode_rep.py --pcap cap.pcapng --frame 1 --to-frame 99999 \
     --ch 4 --class AA_GameReplicationInfo --cdo --server-port 8777
 ```
-Unit tests (`build/rep_roundtrip_test`, `rpc_decode_pcap_test`,
-`lan_beacon_test`, `collision_test`) take fixture arguments; see their
-sections in `docs/AA3_ACTOR_REPLICATION.md`.
+`ctest --test-dir build` runs the 5 registered suites (collision parity,
+package extractor, collision quantization, mission extraction, map bundle
+validation). Without an AA3 install, the three that read its packages report
+as skipped. Other unit tests (`build/rep_roundtrip_test`,
+`rpc_decode_pcap_test`, `lan_beacon_test`, `collision_test`) take fixture
+arguments; see their sections in `docs/AA3_ACTOR_REPLICATION.md`.
 
 The real client runs under Wine against this server; see the notes in the
 parent repo's session memory / docs.
@@ -162,21 +204,30 @@ parent repo's session memory / docs.
 
 ## Known Limitations
 
-- One map's data set (Bridge classic). Other maps need their manifests,
-  collision, actor and rules files generated.
+- All 18 maps ship and boot, but only Bridge classic has been played against
+  retail captures; the other maps' mission data comes from their packages
+  alone. Training levels have no teams or objectives.
 - No server-side movement physics: client locations are trusted.
-- Healing doesn't work yet (the client never sends the treatment request).
+- Treatment: only passive treatment and the Saline revive are modelled.
+  Other IFAK treatments, several medics on one patient, medic voice lines
+  and treatment scoring are missing; the 250-unit treatment range is a guess.
+  The client's "Treat Soldier" prompt depends on the MOS qualification set
+  and `bHasReviveKit` (doc sec 39.7); that fix is bot-tested only.
+- Hit zones: head, torso and legs only (no arms).
 - Side swap (round 4) only flips which team attacks; roles and spawn points
   don't swap. After round 6 the match restarts on the same map.
-- Dropped weapon pickups, grenades and other game modes are not implemented.
+- Dropped weapon pickups, M320 40 mm rounds and other game modes are not implemented.
 - No anti-cheat.
 
 ## Next Steps
 
-1. Real-client test of round end, scoreboard and spectator camera.
-2. Medical treatment: read the client's `CanTreat_Pawn` path in
-   `script_source/AA3Baseline/AA_PlayerController.uc` / `AA_UIManager_Medic.uc`.
-3. Dropped weapons (`AA_DroppedPickup_*`), team-1 spawn points, full side swap.
+1. Real-client test of the treat prompt fix (doc sec 39.7), then the rest of
+   the IFAK: symptom-based active treatments on conscious soldiers, the medic
+   call ("m") and withdraw (backspace) RPCs from the retail capture,
+   treatment scoring (`ClientNotifyScoringEventDetails`), medic voice and the
+   "Stop..." commo reply, arm hit zones.
+2. Real-client test of round end, scoreboard and spectator camera.
+3. Dropped weapons (`AA_DroppedPickup_*`), M320 rounds, team-1 spawn points, full side swap.
 4. Data for more maps, then map rotation.
 
 ## License
@@ -186,4 +237,4 @@ This project is reverse-engineered from America's Army 3. Use for educational pu
 ---
 
 **Status**: Active development -- playable rounds on Bridge
-**Last Updated**: 2026-10-10
+**Last Updated**: 2026-10-12

@@ -36,34 +36,28 @@ public:
     bool ExtractSpawns(std::vector<SpawnPointDef>& out_spawns);
 
     // 3. Collision geometry: extracts unique meshes, placed instances,
-    // BSP, and terrain, packing into AA3COL04 (quantized, default) or AA3COL03.
+    // BSP, and terrain, packing into AA3COL03 (lossless, default: the shipped
+    // bundles' 1:1 form) or AA3COL04 (16-bit quantized).
+    // `extra_packages` (loaded sublevels) add their static geometry.
     bool ExtractCollision(std::vector<uint8_t>& out_col_bytes,
                           uint32_t& out_num_meshes,
                           uint32_t& out_num_instances,
                           uint32_t& out_num_direct_tris,
                           uint32_t& out_total_tris,
-                          bool quantize = true);
+                          bool quantize = false,
+                          const std::vector<const Package*>& extra_packages = {});
 
-    // 4. Placed map actors (Section 3: kMapActors):
-    // Extracts Level.Actors (WorldInfo, AA_Door, InterpActor, AA_BreakableWindow,
-    // AdvMvmt_LadderVolume, AA_DynamicStaticMeshActor) into standard JSON.
-    bool ExtractMapActors(std::string& out_json, const std::string& map_name);
-
-    // 5. Mission round actors (Section 4: kRoundActors):
-    // Extracts or synthesizes complete role hierarchy (Squad Leader + FT Alpha/Bravo/Charlie)
-    // with FireTeamInfo and MCClassRoleReplicationInfo into standard JSON.
-    bool ExtractRoundActors(std::string& out_json, const std::string& sublevel_name);
-
-    // 6. Join & Match actors (Section 5: kJoinActors, Section 6: kMatchActors):
-    // Extracts/synthesizes window manager, extraction objective markers, and ES2 match items.
-    bool ExtractJoinActors(std::string& out_json, const std::string& sublevel_name);
-    bool ExtractMatchActors(std::string& out_json, const std::string& sublevel_name);
-
-    // 7. Mission rules (Section 7: kMissionRules):
-    // Extracts extraction bounding boxes, time limits, and spectator viewpoints.
-    bool ExtractMissionRules(std::string& out_json, const std::string& map_name, const std::string& sublevel_name);
+    // 4. Placed map actors (Section 3: kMapActors): WorldInfo, AA_Door,
+    // AA_BreakableWindow, AdvMvmt_LadderVolume,
+    // AA_DynamicStaticMeshActor from Level.Actors, by on-disk NetIndex, with
+    // MaxIndex from `max_index` (config/class_maxindex_table.tsv). Mission
+    // data (roles, objectives, rules) comes from MissionExtractor.
+    bool ExtractMapActors(std::string& out_json, const std::string& map_name,
+                          const std::map<std::string, uint32_t>& max_index);
 
 private:
+    std::vector<int32_t> LevelActorOrder() const;
+
     const Package& pkg_;
 };
 

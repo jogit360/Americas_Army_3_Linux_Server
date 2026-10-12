@@ -263,10 +263,28 @@ void BuildClientSetBlockOnAsyncLoadingRPC(util::BitWriter& w) {
     w.WriteIntMax(rep::PC::ClientSetBlockOnAsyncLoading, kPCMaxIndex);
 }
 
-void BuildClientNotifyChangedWeaponRPC(util::BitWriter& w, uint32_t weapon_channel) {
+void BuildClientNotifyChangedWeaponRPC(util::BitWriter& w, uint32_t weapon_channel,
+                                       uint32_t old_weapon_channel) {
     w.WriteIntMax(rep::PC::ClientNotifyChangedWeapon, kPCMaxIndex);
     WriteRPCObjectParam(w, weapon_channel);   // awepNew
-    w.WriteBit(false);                        // aawpnOld: Send=0 (None)
+    if (old_weapon_channel) WriteRPCObjectParam(w, old_weapon_channel);   // aawpnOld
+    else w.WriteBit(false);                   // aawpnOld: Send=0 (None)
+}
+
+void BuildClientSendHUDNotifyChangeInventoryCountRPC(util::BitWriter& w, uint8_t inventory_type,
+                                                     int32_t num_clips) {
+    w.WriteIntMax(rep::PC::ClientSendHUDNotifyChangeInventoryCount, kPCMaxIndex);
+    WriteRPCByteEnumParam(w, inventory_type, 5);
+    w.WriteBit(num_clips != 0);               // NumClips
+    if (num_clips != 0) w.WriteInt(static_cast<uint32_t>(num_clips));
+    w.WriteBit(false);                        // ClipIndex: Send=0
+}
+
+void BuildClientAdvancedInventoryUpdateGrenadeCountsRPC(util::BitWriter& w, uint8_t inventory_type,
+                                                        bool no_update_current) {
+    w.WriteIntMax(rep::PC::ClientAdvancedInventoryUpdateGrenadeCounts, kPCMaxIndex);
+    WriteRPCByteEnumParam(w, inventory_type, 5);
+    WriteRPCBoolParam(w, no_update_current);  // bNoUpdateCurrent
 }
 
 void BuildClientSendHUDNotifyAddedInventoryRPC(util::BitWriter& w, uint8_t inventory_type,

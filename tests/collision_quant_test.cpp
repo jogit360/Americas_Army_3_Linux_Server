@@ -2,6 +2,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <random>
 #include <vector>
 
@@ -18,6 +19,10 @@ int main(int argc, char** argv) {
     LOG_INIT();
     const char* pkg_path = argc > 1 ? argv[1] : "/home/odeyin/Documents/AA3/clean_packages/Bridge_night_clear.u";
 
+    if (!std::filesystem::exists(pkg_path)) {
+        std::printf("SKIP: no %s (needs an AA3 install)\n", pkg_path);
+        return 77;
+    }
     std::printf("========================================\n");
     std::printf(" Phase 3: Quantized Mesh Parity Test\n");
     std::printf(" Target package: %s\n", pkg_path);

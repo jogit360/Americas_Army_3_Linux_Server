@@ -1,5 +1,7 @@
 #include "util/json.h"
 
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 
 namespace aa3 {
@@ -129,6 +131,60 @@ std::optional<JsonValue> ParseJson(const std::string& text, std::string* err) {
         return std::nullopt;
     }
     return v;
+}
+
+std::string JsonQuote(const std::string& s) {
+    std::string out = "\"";
+    for (char c : s) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+                    out += buf;
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out + "\"";
+}
+
+std::string WriteJson(const JsonValue& v) {
+    using T = JsonValue::Type;
+    switch (v.type) {
+        case T::kNull: return "null";
+        case T::kBool: return v.b ? "true" : "false";
+        case T::kNumber: {
+            char buf[40];
+            if (std::isfinite(v.num) && v.num == std::floor(v.num) && std::fabs(v.num) < 1e15)
+                std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(v.num));
+            else
+                std::snprintf(buf, sizeof(buf), "%.9g", v.num);
+            return buf;
+        }
+        case T::kString: return JsonQuote(v.str);
+        case T::kArray: {
+            std::string out = "[";
+            for (size_t k = 0; k < v.arr.size(); ++k) out += (k ? "," : "") + WriteJson(v.arr[k]);
+            return out + "]";
+        }
+        case T::kObject: {
+            std::string out = "{";
+            bool first = true;
+            for (const auto& [key, val] : v.obj) {
+                out += (first ? "" : ",") + JsonQuote(key) + ":" + WriteJson(val);
+                first = false;
+            }
+            return out + "}";
+        }
+    }
+    return "null";
 }
 
 } // namespace util

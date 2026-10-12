@@ -3,7 +3,7 @@
 
 // Minimal JSON reader for the server's data files (e.g. the round-actor
 // files from aa3-tools/map_manifest/extract_round_actors.py). Parses the
-// whole document into a tree; no writer, no streaming.
+// whole document into a tree, and writes trees back (compact); no streaming.
 
 #include <cstdint>
 #include <map>
@@ -36,6 +36,12 @@ struct JsonValue {
 
 // nullopt (and `err` set) on malformed input.
 std::optional<JsonValue> ParseJson(const std::string& text, std::string* err = nullptr);
+
+// Compact JSON text for a tree (object keys in sorted order; integral
+// numbers without a fraction).
+std::string WriteJson(const JsonValue& v);
+// A JSON string literal (quoted, escaped).
+std::string JsonQuote(const std::string& s);
 
 } // namespace util
 } // namespace aa3

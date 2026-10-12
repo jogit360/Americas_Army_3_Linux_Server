@@ -4,13 +4,21 @@
 #include <cstdlib>
 #include <random>
 
+#include <filesystem>
+
+#include "engine/map_bundle.h"
 #include "game/collision.h"
 #include "util/logging.h"
 
 int main(int argc, char** argv) {
     LOG_INIT();
     const char* col02_path = argc > 1 ? argv[1] : "data/collision/Bridge_night_clear.col";
-    const char* col03_path = argc > 2 ? argv[2] : "data/maps/Bridge_night_clear.aa3map";
+    const char* col03_path = argc > 2 ? argv[2] : "data/maps/Bridge_night_clear.aa3map.zst";
+    // The legacy flat collision is generated from an AA3 install; skip without it.
+    if (!std::filesystem::exists(col02_path)) {
+        std::printf("SKIP: no %s (needs an AA3 install)\n", col02_path);
+        return 77;
+    }
 
     std::printf("Loading legacy COL02: %s ...\n", col02_path);
     auto t0 = std::chrono::steady_clock::now();
@@ -26,7 +34,11 @@ int main(int argc, char** argv) {
     std::printf("Loading instanced COL03: %s ...\n", col03_path);
     auto t2 = std::chrono::steady_clock::now();
     aa3::game::CollisionWorld w_inst;
-    if (!w_inst.Load(col03_path)) {
+    aa3::engine::MapBundle bundle;
+    const uint8_t* col_ptr = nullptr;
+    size_t col_size = 0;
+    if (!bundle.Load(col03_path) || !bundle.GetCollisionData(col_ptr, col_size) ||
+        !w_inst.LoadFromMemory(col_ptr, col_size, col03_path)) {
         std::fprintf(stderr, "Failed to load %s\n", col03_path);
         return 1;
     }

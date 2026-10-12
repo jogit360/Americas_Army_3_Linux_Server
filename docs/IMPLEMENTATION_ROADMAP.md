@@ -1,7 +1,7 @@
 # America's Army 3 Linux Dedicated Server — Implementation Roadmap
 
 **Document Version**: 2.0  
-**Last Updated**: 2026-10-10  
+**Last Updated**: 2026-10-12  
 **Overall Status**: ✅ Phases 1–5 Complete; Phase 6 (Gameplay Depth) Next
 
 ---
@@ -97,15 +97,22 @@ Eliminated server dependence on 1.2+ GB of proprietary Unreal packages by develo
 
 Building out advanced combat realism systems authentic to America's Army 3:
 
-- **Medical Treatment & Revive Sequence**:
-  - Interactive IFAK triage: apply tourniquet to limbs, apply pressure dressing to torso, administer saline for blood volume loss.
-  - Incapacitated state timers, bleed-out rates, and field resuscitation.
-- **Dropped Weapon & Inventory Pickups**:
-  - Spawning dropped weapon actors with remaining magazine state upon player death or drop action.
-  - Interactive pickup traces and inventory attachment.
-- **Dynamic Obstacle & Door Synchronization**:
-  - Replicate door swing states (`AA_Door`), latches, and breaches across reliable actor bunches.
-  - Interactive breakable window shattering and collision removal.
+Done:
+- ✅ **Weapons & sights** (doc sec 37): per-role rifles with retail fire modes and magazines, rail mods.
+- ✅ **Hand grenades** (doc sec 37): five types, cook/throw/fuse/effects, cook-off in hand, ES2 perk pickups.
+- ✅ **Friend/enemy look** (doc sec 38).
+- ✅ **Wounds & bleeding** (doc sec 39): retail's immediate/bleed split, HealthTarget, bleed-out incapacitation.
+- ✅ **IFAK passive treatment and Saline revive** (doc sec 39), bot-tested with 3 players
+  (`tests/medic_scenario.py`); MOS qualification set + `bHasReviveKit` for the client's treat prompt (sec 39.7).
+- ✅ **Doors and breakable windows** (earlier sections).
+
+Still to do:
+- **Medical**: real-client confirmation of the treat prompt; symptom-based active treatments
+  (tourniquet, pressure dressing, etc.) on conscious soldiers; several treaters; medic call / withdraw RPCs;
+  treatment scoring, voice and commo replies; arm hit zones.
+- **Dropped Weapon & Inventory Pickups**: dropped weapon actors with their magazine state on death or drop;
+  pickup traces and inventory attachment.
+- **M320 40 mm rounds**; remote players' weapon visibility.
 
 ---
 
@@ -135,7 +142,7 @@ Building out advanced combat realism systems authentic to America's Army 3:
 | **Phase 3** | Actor Replication & Game Logic | RepLayouts, Squad/Roles, Movement, Hitscan ballistics | ✅ COMPLETE | Character postures, hitboxes, round timer |
 | **Phase 4** | Map Modernization Pipeline | `AA3MAP01` container, BLAS/TLAS (`AA3COL03`), Quantization (`AA3COL04`), C++ Extractor | ✅ COMPLETE | 4 CTest suites pass (100%), 18 retail maps baked |
 | **Phase 5** | Multi-Map Standalone Execution | CLI `--map <name>`, zero-package runtime, live loading | ✅ COMPLETE | All 18 maps boot cleanly in headless mode |
-| **Phase 6** | Gameplay Depth & Tactical Mechanics | Medical triage/revive, dropped weapons, door states | 🔄 IN PROGRESS | Unit tests for IFAK state machine |
+| **Phase 6** | Gameplay Depth & Tactical Mechanics | Weapons/sights/grenades ✅, wounds + IFAK treat/revive ✅, active treatments, dropped weapons | 🔄 IN PROGRESS | `grenade_client.py`, `medic_client.py`, `medic_scenario.py` |
 | **Phase 7** | Administration & Telemetry | RCON protocol, ban/kick commands, metric exports | ⏳ PLANNED | RCON client integration tests |
 | **Phase 8** | Deployment & Containerization | Dockerfile, systemd service, GitHub Actions CI | ⏳ PLANNED | Container startup and headless healthcheck |
 

@@ -34,6 +34,7 @@ enum class RpcParamKind : uint8_t {
     kObject,    // SerializeObject: bDynamic:1, then RIM(0x800) channel or RIM(2^31) index
     kName,      // AA3 FName: FString + INT32 Number (NO bHardcoded bit — doc sec 22)
     kOpaque,    // struct whose layout isn't resolved: decodable only if Send=0
+    kEnum6,     // ByteProperty of a 33-64 name enum: 6 bits (eAGP_CommoTypes)
 };
 
 struct RpcValue {
@@ -97,6 +98,15 @@ enum class PcRpc : uint8_t {
     kServerSetRailMod,
     kAskForPawn,
     kSendES2ObjectReportRequest,
+    kServerES2Use,
+    kServerES2Active,
+    // IFAK treatment (doc sec 39).
+    kServerStartTreatment,
+    kServerStartPassiveTreatment,
+    kServerStopTreatment,
+    kServerGiveActiveTreatment,
+    kServerWeaponRaise,
+    kSendCommoRequest,
 };
 
 struct DecodedRpc {

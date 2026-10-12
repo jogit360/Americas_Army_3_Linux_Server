@@ -1,6 +1,6 @@
 # America's Army 3 Standalone Linux Dedicated Server — Project Completion Summary
 
-**Last Updated**: 2026-10-10  
+**Last Updated**: 2026-10-12  
 **Overall Status**: ✅ Fully Operable Standalone Dedicated Server with Modernized Zero-Package Map Bundles
 
 ---
@@ -37,11 +37,33 @@ The server operates **completely independently of proprietary client packages** 
 - **Compression Win**: Local mesh geometry reduced by **75.5%** (11.0 MB $\to$ 2.7 MB). Overall bundle collision reduced from 18.59 MB to **14.71 MB**.
 - **Ray Precision**: Verified in [`tests/collision_quant_test.cpp`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/tests/collision_quant_test.cpp) across 2,000 rays: **0 mismatches (100.0% parity)**, with maximum spatial delta $< 0.52$ units ($\approx 1$ cm over a 30,000 unit world).
 
-### Phase 4: Native Mission & Game-Mode Sublevel Ingestion
-- **Placed Level Actors**: Directly parses `Level.Actors` from packages, extracting interactive doors (`AA_Door`), breakable windows (`AA_BreakableWindow`), movers (`InterpActor`), ladders (`AdvMvmt_LadderVolume`), and `WorldInfo`.
-- **Complete Role Hierarchy**: Generates the complete 26-slot AA3 Infantry Combat Team structure (Squad Leader + Alpha, Bravo, Charlie fireteams per team) with authentic weapons, ammunition counts, IFAK, and grenade loadouts.
-- **Interactive Rules**: Ingests extraction volume bounding boxes, breakable window managers, objective markers, and ES2 interactive objects directly into the bundle.
-- **Retired Capture Artifacts**: Eliminated all reliance on 2009 network capture JSON files.
+### Phase 4: Native Mission & Game-Mode Sublevel Ingestion (reworked 2026-10-11)
+The first version of this phase wrote Bridge classic's data (roles, extraction box, viewpoints) into every
+map with wrong MaxIndex/NetIndex values; only Bridge (retail-capture overrides) worked. Now:
+- **Placed Level Actors**: `Level.Actors` doors, windows, ladders, dynamic meshes and `WorldInfo`, each by its
+  **on-disk NetIndex** (read after the state frame, `package_props.cpp`), MaxIndex from
+  `config/class_maxindex_table.tsv`. Collision owners use the same NetIndex.
+- **Mission from Kismet** (`mission_extractor.cpp`): teams (`AA_MCTeamInfo`), fire teams (team builder input
+  slot), roles ("Position 1..5" class roles), spawn markers (team builder -> spawn selector -> fire team
+  spawn marker -> PlayerStarts), mission info (`AA_MCMissionInfoConnector`), extraction rules. Role fields
+  come from per-class retail templates (`config/class_role_templates.json`) plus the level's loadout
+  overrides. On Bridge classic the package-only bake reproduces retail's capture exactly (all 6 fire teams,
+  26 roles, join actors, viewpoints, windows).
+- **Collision** includes the gametype level and geometry shards (Classroom's room, Stronghold_Lighting).
+- **Checked** by `map_bundle_validation_test` (MaxIndex, NetIndex ranges, armed roles, ground under spawns).
+- Training levels (Classroom, ConexMOUT, MultiRange, ObstacleCourse, short-range, Leavenworth, VRS) have no
+  team builder: they load and spawn, without teams/roles/objectives.
+
+### Shipped Maps: Bundles in the Repository, 1:1 (2026-10-12)
+- All 18 maps ship as `data/maps/<map>.aa3map.zst`: **49 MB** in git, 244 MB in memory. No AA3 install is
+  needed to run or test the server.
+- **Lossless**: collision is `AA3COL03`, the packages' float vertices; 16-bit quantization (`AA3COL04`) is
+  now opt-in (`--quantized`).
+- **Proven 1:1**: `aa3_mapbake --verify` re-bakes every map from an install and compares each shipped
+  bundle, section by section: 18/18 byte-identical. Baking is deterministic.
+- The server boots all 18 maps from the shipped bundles with no errors. The round, grenade and 3-bot medic
+  tests pass on them.
+- See `docs/MAP_MODERNIZATION_SPEC.md` sec 10.
 
 ### Retail Map Batch Integration
 - Scanned all **91 cooked packages** across 17 directories in `/home/odeyin/Documents/AA3/AA3/AA3Game/CookedPC/Maps`.
@@ -51,6 +73,9 @@ The server operates **completely independently of proprietary client packages** 
 ---
 
 ## 3. Baked Retail Map Catalog
+
+Sizes below are the original quantized bake. The shipped lossless bundles and their sizes are listed in
+`docs/MAP_MODERNIZATION_SPEC.md` sec 10 (244 MB uncompressed, 49 MB shipped).
 
 | Map Target | Bundle File | Bundle Size | Equiv. Triangles | Unique Meshes / Instances |
 |---|---|---|---|---|
@@ -87,11 +112,45 @@ The server operates **completely independently of proprietary client packages** 
 - **Damage & Medical Model**: Server-authoritative hitscan damage by skeletal hit location, bleeding simulation, incapacitation, and match resolution.
 - **Multi-Map CLI**: Added `--map <name>` / `-m <name>` argument to boot any of the 18 retail maps on demand.
 
+### Weapons, Sights & Grenades (2026-10-11; `src/game/weapons.cpp`, doc sec 37)
+- **Per-role kits**: each class role's rifle (M4A1, M16A4, M16 DMR, M249) with retail's fire modes,
+  rate of fire and magazine size (the M249's 200-round box and automatic fire included).
+- **Rail mods**: iron sights, CCO, the ACOG family, M95 light and XM320 mount, switched with
+  `ServerSetRailMod` exactly as retail.
+- **Hand grenades**: M67 frag, M83 smoke, M106, M84 stun and AN-M14 incendiary. Taking one out,
+  pulling the pin, dropping the spoon to cook, throwing, the fuse, the projectile, the blast, smoke and
+  burn effects, the replacement grenade and the weapon switch back all follow retail; a grenade cooked
+  too long goes off in hand. Counts live on the PRI.
+- **ES2 perks**: grenade and magazine pickups (`ServerES2Use`).
+- **Friend/enemy look** (doc sec 38): each side sees the other team as the enemy force and its own as US soldiers.
+
+### Wounds, Bleeding & IFAK Treatment (2026-10-11/12; `src/game/medic.cpp`, doc sec 39)
+Ground truth: a retail LAN server session (`captures/retail_ifak_2026-10-11.pcapng`) with the real client
+treating and reviving a scripted bot.
+- **Wounds**: a torso or leg hit applies ~43% of its damage at once and bleeds the rest out at 1.2 health/s
+  down to `HealthTarget` (retail 100 -> 84.88, bleeding to 64.96; ours 84.9 / 65.0). Bleeding to 25
+  incapacitates (`AA_DamageType_Bleeding`). Head shots incapacitate at once.
+- **Passive treatment**: `ServerStartTreatment` / `ServerStartPassiveTreatment` / `ServerStopTreatment`.
+  Bleeding stops at once; the wound is treated after 2 s; the medic gets `SetTreatmentOnRequestingClient`
+  and the weapon lowered/raised.
+- **Revive**: Saline (`ServerGiveActiveTreatment`) on a downed teammate uses an IFAK (the patient's own
+  first), brings them back at 25 health still owing their bleed, and sends `ClientRecapacitate` plus the
+  patient's camera, posture and weapon notices.
+- **Replication**: `CurrentTreatmentTreater`, `ReplicatedInjuryVariables`, `RepNotifyInjuryVariables`,
+  upper/lower body injury flags, `bRecapacitated`, `bResetWeaponIK` to every client.
+- **Treat prompt** (doc sec 39.7): the client only offers "Treat Soldier" when it holds the player's MOS
+  qualifications (Combat Medic among them) and `PRI.bHasReviveKit`; both are now sent as retail does.
+
+### Test Bots for Retail Servers
+`tests/bot_client.py --retail NAME` logs into a real retail AA3 server like the game client does (full
+login, level-streaming replies, role/ready each round, rifle drawn, `--wander` against the idle kill). It
+was used to capture the IFAK ground truth.
+
 ---
 
 ## 5. Automated Verification & Test Suite
 
-All 4 test suites pass 100%:
+All 5 registered test suites pass 100%:
 
 ```bash
 $ ctest --test-dir build --output-on-failure
@@ -103,15 +162,27 @@ Test project standAlone-aa3-linuxServer/build
     Start 3: collision_quant_test
 3/4 Test #3: collision_quant_test .............   Passed    0.34 sec
     Start 4: mission_extraction_test
-4/4 Test #4: mission_extraction_test ..........   Passed    0.03 sec
+4/5 Test #4: mission_extraction_test ..........   Passed    0.03 sec
+    Start 5: map_bundle_validation_test
+5/5 Test #5: map_bundle_validation_test .......   Passed
 
-100% tests passed, 0 tests failed out of 4
+100% tests passed, 0 tests failed out of 5
 ```
 
 1. [`collision_parity_test`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/tests/collision_parity_test.cpp): Proves ray tracing parity between legacy flat `COL02` and instanced/quantized bundles.
 2. [`package_extractor_test`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/tests/package_extractor_test.cpp): Validates direct C++ extraction from packages without Python scripts.
 3. [`collision_quant_test`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/tests/collision_quant_test.cpp): Verifies 16-bit vertex quantization and packed uint16 indices with 0 ray mismatches over 2,000 rays.
 4. [`mission_extraction_test`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/tests/mission_extraction_test.cpp): Validates all 10 bundle sections, world initialization, and role slot creation across teams.
+5. [`map_bundle_validation_test`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/tests/map_bundle_validation_test.cpp): Checks every bundle's MaxIndex/NetIndex ranges, armed roles and ground under spawns.
+
+Scripted end-to-end clients (run against a live server, each prints PASS/FAIL; all pass as of 2026-10-12):
+
+| Script | Covers |
+|---|---|
+| `tests/fake_client.py --round` | join, team and role, spawn, a full round |
+| `tests/grenade_client.py` | rail mods, grenade counts, take out, cook timer, throw, replacement, switch back, cook-off in hand, ES2 perks |
+| `tests/medic_client.py` | 2 players: leg wound, passive treatment, head shot, Saline revive |
+| `tests/medic_scenario.py` | 3 players: enemy wounds the patient, medic (with the full MOS set) treats and revives |
 
 ---
 
@@ -143,3 +214,16 @@ Test project standAlone-aa3-linuxServer/build
 # Batch bake all 18 retail maps
 ./build/aa3_mapbake --batch-bake
 ```
+
+---
+
+## 7. Remaining Work
+
+| Area | What's left |
+|---|---|
+| IFAK | Real-client confirmation of the treat prompt; symptom-based active treatments on conscious soldiers (tourniquet, dressings, etc.); several medics on one patient; the medic call ("m") and withdraw (backspace) RPCs; treatment scoring and XP; medic voice and the "Stop..." commo reply; retail's 33 ms progress cadence; the real treatment range (250 units is a guess) |
+| Damage | Arm and upper-torso hit zones (only head, torso and legs today) |
+| Weapons | Dropped weapons and pickups (`AA_DroppedPickup_*`); M320 40 mm rounds; remote players' weapon visibility |
+| Rounds | Team-1 spawn points and the full side swap (roles/spawns); map rotation after the match |
+| Modes & maps | TAH, VIP and other game modes; training levels have no teams or objectives |
+| Server | No server-side movement physics (client locations trusted); no anti-cheat; RCON/admin and deployment (roadmap phases 7-8) |

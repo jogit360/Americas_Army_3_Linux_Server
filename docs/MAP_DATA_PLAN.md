@@ -146,7 +146,7 @@ source of truth.
 | 1 | Instanced collision (`AA3COL03`: unique meshes BLAS + TLAS instances + terrain/BSP) | **COMPLETE** | 69 MB -> 19 MB (3.5x reduction); load/build time 362ms -> 72ms (5x faster); 100% ray parity |
 | 2 | Direct-from-package ingestion via native C++ `PackageExtractor` | **COMPLETE** | Ported all python tools to C++; parses UE3 v568 packages in ~58ms; zero Python runtime deps |
 | 3 | Quantized mesh compression (`AA3COL04`: 16-bit vertex quantization, packed uint16 indices) | **COMPLETE** | 75.5% reduction in raw mesh geometry; 0 ray mismatches over 2,000 rays; dynamic window blocking preserved |
-| 4 | Mission & game-mode sublevel ingestion (Level.Actors, RoundActors, Join/Match, MissionRules) | **COMPLETE** | All 18 maps have full 26-slot role hierarchies (13 per team), interactive doors/windows, rules; retired loose JSONs |
+| 4 | Mission & game-mode sublevel ingestion (Level.Actors, RoundActors, Join/Match, MissionRules) | **COMPLETE (reworked 2026-10-11, sec 7)** | Multiplayer maps: teams/fire teams/roles/spawn markers/extraction from the gametype level's Kismet; map actors by on-disk NetIndex; validated against Bridge's retail capture |
 | 5 | Complete retail batch bake across all 91 cooked packages | **COMPLETE** | All 18 base retail maps baked into `data/maps/*.aa3map` (195 MB total vs 1.2 GB cooked packages, 6.1x overall ratio) |
 
 ## 6. Resolution of Open Questions
@@ -155,4 +155,47 @@ source of truth.
 - **Dynamic map objects that move**: Resolved. Level doors (`AA_Door`), windows (`AA_BreakableWindow`), and movers (`InterpActor`) are extracted into `kMapActors` and instanced with runtime owner NetIndex. $O(1)$ instance toggles via `SetOwnerEnabled` verified across ray traces.
 - **Quantization precision**: Verified. 16-bit integer quantization over local mesh bounding volumes yields sub-millimeter precision on small props and ~0.5–1.1 units (~1 cm) over large structures, with exactly 0 hit/miss discrepancies across 2,000 test rays.
 - **Server standalone map execution**: CLI `--map <name>` / `-m <name>` argument implemented and verified on multiple retail maps (`Pipeline_dawn_clear`, `ConexMOUT`, `Stronghold_night_clear`, `Airfield_day_cloudy`, `Bridge_night_clear`).
+
+## 7. Mission extraction, reworked (2026-10-11)
+
+What the first Phase 4 shipped was Bridge classic's data written into every bundle (the same 26
+roles, Bridge's extraction box and viewpoints) with wrong wire values: FireTeamInfo MaxIndex 26
+(class: 38) and the wrong class default object, role loadouts in RepIndex 24 instead of 26, no
+weapons; windows/ladders/doors/DSMA MaxIndex 32/36/38/28 (class: 25/23/36/25); map actor
+NetIndex from an export-order count, right only up to the first forced export (Bridge WorldInfo
+19595 vs 15064 -- past the package's 15065 net objects). Only Bridge worked, because its bundle
+used the retail-capture JSON.
+
+Now (`src/engine/package_props.cpp`, `src/engine/mission_extractor.cpp`):
+
+- **NetIndex** of any export = the INT32 UObject::Serialize writes after the component header and
+  the RF_HasStack state frame (Node, StateNode, ProbeMask(8), LatentAction(2), StateStack, Offset if
+  Node). Cooked packages keep it and the client uses it (UnObj.cpp SerializeNetIndex). Map actors,
+  windows, viewpoints, spawn markers and collision owners all use it.
+- **Kismet walk** of the gametype level, as retail builds a round:
+  `AA_MCTeamBuilderSeqAct` "Team Info" -> `AA_MCTeamInfo` (iTeamID, name, briefing, mission type);
+  fire team builders' outputs into a team builder input k = fire team k (Alpha, Bravo, ...;
+  `iFireteamID` on the builder is unreliable, e.g. Airfield's Charlie has none);
+  "Position 1..5" -> `AA_MCClassRole_*`; team builder -> spawn group manager -> spawn selector,
+  link named after the fire team -> `AA_MCSeqVar_Object` -> `AA_MCFireteamSpawnMarker` (its
+  `anpPositions` PlayerStarts); `AA_MCMissionInfoConnector.miMissionInfo` -> GRI mission text.
+- **Roles**: every retail instance of a role class carries identical fields, so they are class
+  defaults (AA3Baseline): `config/class_role_templates.json` holds them per class (from the Bridge
+  capture), the level's overrides (only grenade counts in practice: Shantytown, Airfield co,
+  VIP/TAH variants) are applied on top, plus iTeamID / iFireTeamID / sClassRoleID
+  ("SL", else T<team>F<fire team>R<position>).
+- **Rules** (bundle MissionRules): extraction volumes when the level has no carried objective,
+  viewpoints, `mission` (GRI text), `teams`, `spawn_markers`. The server spawns each player at
+  their fire team's marker (other side's on swapped rounds), member n on PlayerStart n, and on a
+  time-out gives the round to the team whose mission type is to defend.
+- **Not extracted**: InterpActors (the server never moves them; Shantytown places 2571, past the
+  2048 channel limit), ReplicatedMesh/ReplicatedMaterial (the client has them from its level),
+  ES2 pickups (retail spawns them at random), objective types other than extraction (activated /
+  take-and-hold / carried objectives end by elimination or time).
+
+Check: the package-only bake of Bridge_night_clear matches retail's capture for all 6 fire teams
+and 26 roles, join actors, viewpoints, windows and extraction box; `map_bundle_validation_test`
+checks every bundle (MaxIndex vs class table, NetIndex < package net objects, armed roles, fire
+team markers, ground under every spawn -- it found Airfield's terrain missing: Terrain's default
+DrawScale3D is 256, not 1).
 

@@ -51,6 +51,12 @@ namespace net_index {
 constexpr uint32_t kPawn            = 8103;   // Default__AA_Pawn
 constexpr uint32_t kGRI             = 10929;  // Default__AA_GameReplicationInfo
 constexpr uint32_t kMOSQualBCT      = 18071;  // Default__AA_MOSQualificationBCT
+// The rest of retail's per-player MOS set (doc sec 39.7), in its open order.
+constexpr uint32_t kMOSQualExtra[]  = {18079,   // Default__AA_MOSQualificationDRMAIT
+                                       18091,   // Default__AA_MOSQualificationGrenadierAIT
+                                       18032,   // Default__AA_MOSQualficationCombatMedic
+                                       18044,   // Default__AA_MOSQualificationARAIT
+                                       18099};  // Default__AA_MOSQualificationRiflemanAIT
 constexpr uint32_t kPRI             = 21708;  // Default__AA_PlayerReplicationInfo
 constexpr uint32_t kSteamStatMgr    = 29740;  // Default__AA_SteamStatManager
 constexpr uint32_t kTeamInfo        = 32631;  // Default__AA_TeamInfo
@@ -372,7 +378,9 @@ void World::CheckRoundEnd(bool second_tick) {
     if (!second_tick) return;
     // Time limit (AA_MCTimeLimitEndOfMatchSeqEvent): the defending team wins.
     if (gri_->mission_time_remaining <= 0) {
-        const int32_t defenders = extraction_rules_.empty() ? -1 : 1 - ExtractingTeam(extraction_rules_[0].team);
+        int32_t defenders = -1;
+        if (!extraction_rules_.empty()) defenders = 1 - ExtractingTeam(extraction_rules_[0].team);
+        else if (defending_team_ >= 0) defenders = swapped_ ? 1 - defending_team_ : defending_team_;
         EndRound(defenders, "time limit");
         return;
     }
@@ -466,6 +474,10 @@ void World::ResetLevel() {
     reloads_.clear();
     deliberate_reloads_.clear();
     door_timers_.clear();
+    for (auto& g : thrown_) {                  // grenades still out: gone with the level
+        g.gone = true;
+        g.drop_at = clock_ + 10.0;
+    }
     ++match_resets_;
     constexpr uint32_t kIncMatchReset = 28, kStateName = 30;            // AA_Door
     constexpr uint32_t kCollideActors = 10, kShatteredFlags = 23, kCrackedFlags = 24;
@@ -491,8 +503,10 @@ void World::ResetLevel() {
     }
     // ES2 objects: retail closes them at the next match start and opens a
     // fresh set (t=255.34).
-    for (size_t i = 0; i < match_actors_.size() && i < match_actor_start_.size(); ++i)
+    for (size_t i = 0; i < match_actors_.size() && i < match_actor_start_.size(); ++i) {
         match_actors_[i]->fields = match_actor_start_[i];
+        match_actors_[i]->gone = false;
+    }
     ++match_actor_serial_;
     gri_->b_match_is_over = false;
     gri_->battle_planning_time_remaining = 30;
@@ -534,8 +548,48 @@ bool World::LoadMissionRulesFromJson(const std::string& json) {
     }
     viewpoints_.clear();
     for (const auto& v : (*doc)["viewpoints"].arr) viewpoints_.push_back(static_cast<uint32_t>(v.Int()));
-    LOG_INFO("Mission rules: %zu extraction objective(s), %zu viewpoints loaded",
-             extraction_rules_.size(), viewpoints_.size());
+
+    // Mission metadata the client's menus show (AA_MCMissionInfoConnector /
+    // AA_MCTeamInfo of the gametype level; aa3_mapbake).
+    const util::JsonValue& m = (*doc)["mission"];
+    if (gri_ && m.Has("name")) {
+        gri_->s_mission_name = m["name"].Str();
+        gri_->s_author = m["author"].Str();
+        gri_->s_type = m["type"].Str();
+        gri_->s_summary = m["summary"].Str();
+        gri_->min_player_count = static_cast<int32_t>(m["min_players"].Int(gri_->min_player_count));
+        gri_->max_player_count = static_cast<int32_t>(m["max_players"].Int(gri_->max_player_count));
+        gri_->mission_time_seconds = static_cast<int32_t>(m["mission_time_seconds"].Int(gri_->mission_time_seconds));
+    }
+    defending_team_ = -1;
+    for (const auto& t : (*doc)["teams"].arr) {
+        int64_t i = t["index"].Int(-1);
+        if (i < 0 || i > 1) continue;
+        const std::string& type = t["mission_type"].Str();
+        if (gri_) {
+            if (!t["name"].Str().empty()) gri_->team_names[static_cast<size_t>(i)] = t["name"].Str();
+            gri_->mission_briefings[static_cast<size_t>(i)] = t["briefing"].Str();
+            if (!type.empty()) gri_->mission_types[static_cast<size_t>(i)] = type;
+        }
+        if (type == "Defend" || type == "Defending" || type == "Ambush") defending_team_ = static_cast<int32_t>(i);
+    }
+    spawn_markers_.clear();
+    for (const auto& sm : (*doc)["spawn_markers"].arr) {
+        MarkerSpawns ms;
+        ms.net = static_cast<uint32_t>(sm["net"].Int());
+        ms.team = static_cast<int32_t>(sm["team"].Int());
+        ms.fire_team = static_cast<int32_t>(sm["fire_team"].Int());
+        for (const auto& st : sm["starts"].arr) {
+            if (st.arr.size() < 4) continue;
+            SpawnPoint p{{static_cast<float>(st.arr[0].num), static_cast<float>(st.arr[1].num),
+                          static_cast<float>(st.arr[2].num)}, static_cast<int32_t>(st.arr[3].num)};
+            ms.starts.push_back(p);
+        }
+        if (!ms.starts.empty()) spawn_markers_.push_back(std::move(ms));
+    }
+    LOG_INFO("Mission rules: %zu extraction objective(s), %zu viewpoints, %zu fire team spawn markers%s%s",
+             extraction_rules_.size(), viewpoints_.size(), spawn_markers_.size(),
+             m.Has("name") ? ", mission " : "", m.Has("name") ? m["name"].Str().c_str() : "");
     return true;
 }
 
@@ -747,7 +801,8 @@ bool World::LoadRoundActorsFromJson(const std::string& json) {
             if (const DataField* m = fts[f]->Get(FT::aamcfsmDefaultSpawnMarker))
                 team->SetRoundField(TI::aamcfsmPlayerSelectable, static_cast<int32_t>(f), m->v);
         }
-        bool assault = gri_ && gri_->mission_types[static_cast<size_t>(t)] == "Assault";
+        const std::string type = gri_ ? gri_->mission_types[static_cast<size_t>(t)] : "";
+        bool assault = !(type == "Defend" || type == "Defending" || type == "Ambush");
         team->SetRoundField(assault ? TI::bTeamAssault : TI::bTeamDefend, -1, DataValue::Bool(true));
         team->SetRoundField(assault ? TI::bTeamAssaultNextRound : TI::bTeamDefendNextRound, -1,
                             DataValue::Bool(true));
@@ -862,71 +917,35 @@ void World::SetSpawnPoint(int32_t team_index, float x, float y, float z, int32_t
     p.loc[0] = x; p.loc[1] = y; p.loc[2] = z; p.yaw = yaw;
 }
 
-// Per-role weapon kits (doc sec 34). Every kit is retail's FTL M4A1 kit
-// (config/spawn_inventory.json) with the role's weapon swapped in: the
-// role's wpnPrimaryOne class and iPrimaryWeaponOneAmmo magazines, the
-// weapon's own magazine class (its WeaponMagClasses default) and sight, and
-// the HUD inventory types. AA3Baseline class export indices; the default
-// object a channel opens is class + 1.
-namespace {
-struct WeaponKit {
-    uint32_t weapon_cls; const char* weapon; uint32_t max_index;
-    uint32_t mag_cls; const char* mag;
-    uint32_t sight_cls; const char* sight;
-    uint8_t weapon_type, ammo_type;
-};
-constexpr WeaponKit kKits[] = {
-    {5250, "AA_BulletWeapon_M4A1",   71, 979, "AA_AmmoContainer_30x556mmBall",
-     35972, "AA_WeaponModSights_CCO_US_M68comp4", 14, 17},
-    {5152, "AA_BulletWeapon_M16A4",  71, 979, "AA_AmmoContainer_30x556mmBall",
-     35972, "AA_WeaponModSights_CCO_US_M68comp4", 16, 17},
-    {5156, "AA_BulletWeapon_M16DMR", 71, 979, "AA_AmmoContainer_30x556mmBall",
-     35933, "AA_WeaponModSights_ACOG_RCO",        15, 17},
-    {5244, "AA_BulletWeapon_M249",   72, 956, "AA_AmmoContainer_200x556mmBall_Box",
-     35972, "AA_WeaponModSights_CCO_US_M68comp4", 13, 18},
-};
-}  // namespace
+// Per-role weapon kits, rail mods and grenades: src/game/weapons.cpp.
 
-void World::ApplyRoleKit(ServerPlayerController& pc, std::vector<std::unique_ptr<ServerRoundActor>>& items) {
-    namespace CR = network::rep::ClassRoleRI;
-    if (!pc.pri || !pc.pri->team || !pc.pawn) return;
-    const int32_t idx = pc.pri->assigned_class_role_index;
-    const auto& slots = role_slots_[static_cast<size_t>(pc.pri->team->team_index) & 1];
-    if (idx < 0 || static_cast<size_t>(idx) >= slots.size() || !slots[static_cast<size_t>(idx)].role) return;
-    const ServerRoundActor* role = slots[static_cast<size_t>(idx)].role;
-    const DataField* wf = role->Get(CR::wpnPrimaryOne);
-    const DataField* af = role->Get(CR::iPrimaryWeaponOneAmmo);
-    if (!wf || wf->v.kind != DataValue::Kind::kObj) return;
-    const WeaponKit* kit = nullptr;
-    for (const auto& k : kKits) if (k.weapon_cls == wf->v.net) kit = &k;
-    if (!kit) return;
-    auto retarget = [&](ServerRoundActor& a, const char* cls, uint32_t class_index, uint32_t max_index) {
-        a.class_name = cls;
-        a.cdo_net_index = class_index + 1;
-        a.object_index = ObjectIndex("AA3Baseline", a.cdo_net_index);
-        if (max_index) a.max_index = max_index;
-    };
-    for (auto& it : items) {
-        ServerRoundActor& a = *it;
-        if (a.class_name.rfind("AA_BulletWeapon", 0) == 0) {
-            retarget(a, kit->weapon, kit->weapon_cls, kit->max_index);
-            a.Set(36, -1, DataValue::Str(kit->sight));      // AA_Weapon.sWeaponSightType
-        } else if (a.class_name.rfind("AA_AmmoContainer", 0) == 0) {
-            retarget(a, kit->mag, kit->mag_cls, 0);
-        } else if (a.class_name.rfind("AA_WeaponModSights", 0) == 0) {
-            retarget(a, kit->sight, kit->sight_cls, 0);
-        }
+const World::SpawnPoint* World::FireTeamSpawn(const ServerPlayerController& pc) const {
+    if (spawn_markers_.empty() || !pc.pri || !pc.pri->team) return nullptr;
+    const int32_t team = pc.pri->team->team_index;
+    if (team < 0 || team > 1) return nullptr;
+    const int32_t side = swapped_ ? 1 - team : team;
+    int32_t fire_team = 0, member = 0;
+    const auto& slots = role_slots_[static_cast<size_t>(team)];
+    const int32_t role = pc.pri->assigned_class_role_index;
+    if (role >= 0 && static_cast<size_t>(role) < slots.size()) {
+        fire_team = slots[static_cast<size_t>(role)].fire_team_id;
+        member = slots[static_cast<size_t>(role)].member_index;
     }
-    pc.pawn->weapon_inv_type = kit->weapon_type;
-    pc.pawn->ammo_inv_type = kit->ammo_type;
-    if (af) pc.pawn->spare_mags = static_cast<int32_t>(af->v.i);
-    LOG_INFO("Kit for %s: %s, %d magazines, %s", pc.pri->player_name.c_str(), kit->weapon,
-             pc.pawn->spare_mags, kit->sight);
+    const MarkerSpawns* best = nullptr;
+    for (const auto& m : spawn_markers_) {
+        if (m.team != side) continue;
+        if (m.fire_team == fire_team) { best = &m; break; }
+        if (!best) best = &m;
+    }
+    if (!best) return nullptr;
+    return &best->starts[static_cast<size_t>(member) % best->starts.size()];
 }
 
 ServerPawn* World::SpawnPawn(ServerPlayerController& pc) {
     if (!pc.pri || !pc.pri->OnPlayableTeam() || pc.pawn) return pc.pawn;
-    const SpawnPoint& sp = spawn_points_[static_cast<size_t>(pc.pri->team->team_index)];
+    const int32_t team = pc.pri->team->team_index;
+    const SpawnPoint* fsp = FireTeamSpawn(pc);
+    const SpawnPoint& sp = fsp ? *fsp : spawn_points_[static_cast<size_t>(swapped_ ? 1 - team : team)];
     auto pawn = std::make_unique<ServerPawn>();
     pawn->object_index = BaselineIndex(net_index::kPawn);
     pawn->transient     = true;
@@ -938,7 +957,12 @@ ServerPawn* World::SpawnPawn(ServerPlayerController& pc) {
     pawn->rotation_yaw  = sp.yaw;
     pawn->proxy         = pc.proxy;
     pawn->body_soldier_name = pc.pri->player_name;
+    // Team marks for AA3's friend/enemy swap (doc sec 38): every client draws
+    // a soldier whose iOriginalOwningTeamIndex isn't its own team as the
+    // enemy force; iBodyTeamIndex is the same for the body after death
+    // (AA_MCMissionManager.RestartPlayer).
     pawn->original_owning_team = pc.pri->team->team_index;
+    pawn->body_team_index = pc.pri->team->team_index;
     pc.pawn = pawn.get();
     // Spawn inventory (doc sec 30): copies of retail's, references mapped
     // from retail's channels to this player's actors -- 2 PC, 10 PRI,
@@ -954,6 +978,10 @@ ServerPawn* World::SpawnPawn(ServerPlayerController& pc) {
             }
         }
         ApplyRoleKit(pc, items);
+        // The kit's own team mark (retail spawns the rifle with the owner's
+        // TeamIndex; the template is retail's Black kit, team 0).
+        for (auto& it : items)
+            if (it->Get(0)) it->Set(0, -1, DataValue::Int(pc.pri->team->team_index));
         pawn_inventory_[pc.pawn] = std::move(items);
     }
     pawns_.push_back(std::move(pawn));
@@ -1273,13 +1301,13 @@ void World::UpdateDoors() {
 // Ammo (doc sec 31). Live retail capture, 2026-10-09: every ServerStartFire
 // on semi is answered with the magazine's RoundIndex + 1 (t=34.47 ->
 // 34.49 ...); chambering the first round sets it to 1. RoundIndex counts
-// rounds drawn from the magazine, so a 30-round magazine is spent at 30;
+// rounds drawn from the magazine, so a 30-round magazine is spent at 30
+// (the M249's 200-round box at 200);
 // the next shot fires the chambered round and leaves the chamber empty and
 // the bolt locked back until a reload. Rates of fire (eRateOfFire): 0
 // safe, 1 semi, 2 burst of 3, 3 automatic (~800 rpm).
 void World::FireRound(ServerPawn& pawn) {
     constexpr uint32_t kRoundIndex = 29, kChamberedRound = 57, kBoltLockedToRear = 62;
-    constexpr int64_t kMagazineRounds = 30;
     ServerRoundActor* weapon = FindInventory(&pawn, pawn.loaded_weapon);
     ServerRoundActor* mag = FindInventory(&pawn, pawn.loaded_mag);
     if (!weapon) return;
@@ -1292,7 +1320,7 @@ void World::FireRound(ServerPawn& pawn) {
     TraceShot(pawn, *weapon);
     const DataField* ri = mag ? mag->Get(kRoundIndex) : nullptr;
     int64_t drawn = ri ? ri->v.i : 0;
-    if (mag && drawn < kMagazineRounds) {
+    if (mag && drawn < pawn.mag_rounds) {
         mag->Set(kRoundIndex, -1, DataValue::Int(drawn + 1));      // next round chambered
     } else {
         weapon->Set(kChamberedRound, 0, DataValue::Actor(nullptr)); // last round gone
@@ -1376,7 +1404,25 @@ void World::TraceShot(ServerPawn& pawn, ServerRoundActor& weapon) {
 void World::DamagePawn(ServerPawn& victim, ServerPawn* shooter, const Vec3& at, const Vec3& dir) {
     const float hh = victim.prone ? 14.0f : (victim.crouched ? 34.0f : 48.0f);
     const float rel = at.z - victim.location[2];
-    const float dmg = rel > hh - 14.0f ? 100.0f : (rel > -hh * 0.2f ? 40.0f : 25.0f);
+    // Zone -> eHitLocation and the hit's total: head 100 (no wound, down at
+    // once), torso 40, legs 35 -- retail's leg hits (capture 2026-10-11, doc
+    // sec 39): ~15 at once and ~20 bled out (100 -> 84.88, HealthTarget 64.96).
+    if (rel > hh - 14.0f) {
+        ApplyDamage(victim, shooter, 100.0f, 6464, at, dir);   // AA3Baseline AA_DamageType_Bullet
+        return;
+    }
+    const bool legs = rel <= -hh * 0.2f;
+    const int location = legs ? (rel > -hh * 0.6f ? 12 : 13) : 3;   // HL_UpperLegRight / LowerLegRight / UpperTorso
+    const float total = legs ? 35.0f : 40.0f;
+    const float now = total * 0.43f;
+    ApplyDamage(victim, shooter, now, 6464, at, dir);
+    if (!victim.torn_off && !victim.incapacitated)
+        AddWound(victim, location, total - now, shooter && shooter->pri ? shooter->pri->player_name : "Unknown");
+}
+
+void World::ApplyDamage(ServerPawn& victim, ServerPawn* shooter, float dmg, uint32_t damage_class,
+                        const Vec3& at, const Vec3& dir) {
+    if (victim.torn_off || dmg <= 0.0f) return;
     // A soldier already down dies to the next hit (doc sec 35).
     if (victim.incapacitated) {
         LOG_INFO("%s finished %s", shooter && shooter->pri ? shooter->pri->player_name.c_str() : "?",
@@ -1388,7 +1434,7 @@ void World::DamagePawn(ServerPawn& victim, ServerPawn* shooter, const Vec3& at, 
     victim.health_target = victim.health;
     victim.movement_speed_modifier = InjuredSpeedModifier(victim.health);
     victim.hit_location[0] = at.x; victim.hit_location[1] = at.y; victim.hit_location[2] = at.z;
-    victim.hit_damage_class = 6464;                // AA3Baseline AA_DamageType_Bullet
+    victim.hit_damage_class = damage_class;
     ++victim.hit_serial;
     victim.shot_effect_hit_location[0] = at.x;
     victim.shot_effect_hit_location[1] = at.y;
@@ -1398,7 +1444,7 @@ void World::DamagePawn(ServerPawn& victim, ServerPawn* shooter, const Vec3& at, 
     LOG_INFO("%s hit %s for %.0f (health %.0f)", shooter && shooter->pri ? shooter->pri->player_name.c_str() : "?",
              victim.pri ? victim.pri->player_name.c_str() : "?", dmg, victim.health);
     if (victim.health <= kIncapacitationHealth)
-        Incapacitate(victim, 6464, shooter && shooter->pri ? shooter->pri->player_name : "Unknown");
+        Incapacitate(victim, damage_class, shooter && shooter->pri ? shooter->pri->player_name : "Unknown");
 }
 
 // AA_Pawn.MovementSpeedModifier as retail sends it while hurt: 0.8852 at
@@ -1421,6 +1467,9 @@ float World::InjuredSpeedModifier(float health) {
 // 1.2 s graph 0 {42 -> 13} + bRagdollTick/bRagdollStuck, which settles the
 // ragdoll into the incapacitated pose (UpdateIncapacitated).
 void World::Incapacitate(ServerPawn& victim, uint32_t damage_class, const std::string& instigator) {
+    // The bleed still owed, for a revive (doc sec 39): retail keeps
+    // HealthTarget while down; ours shows 25.
+    victim.target_before_incap = std::min(victim.health_target, victim.health);
     victim.incapacitated = true;
     victim.incap_at = clock_;
     victim.incap_stage = 0;
@@ -1428,9 +1477,9 @@ void World::Incapacitate(ServerPawn& victim, uint32_t damage_class, const std::s
     victim.health_target = kIncapacitationHealth;
     victim.incap_type_index = ObjectIndex("AA3Baseline", damage_class);
     victim.incap_instigator = instigator;
-    // Gunshot wounds bleed; falls (broken legs) don't -- assumption, no
-    // retail sample of a bullet incapacitation yet.
-    victim.bleeding = incap_bleeding_ && damage_class == 6464;
+    // Gunshot and blast wounds bleed; falls (broken legs) don't --
+    // assumption, no retail sample of a bullet incapacitation yet.
+    victim.bleeding = incap_bleeding_ && damage_class != 6486;
     victim.SetGraph(0, 41, 41);
     victim.SetGraph(2, 68, 1);
     victim.graph_steps.clear();
@@ -1496,6 +1545,11 @@ void World::UpdateIncapacitated(double dt) {
 // animation states; PRI Deaths+1, iDied, bIsDead; PlayerStorageProxy
 // bIsDead; the controller loses its pawn (the client goes to spectating).
 void World::KillPawn(ServerPawn& victim, ServerPawn* killer) {
+    // Treatment links end with the soldier.
+    StopTreatment(&victim);
+    for (auto& p : pawns_)
+        if (p->patient == &victim) StopTreatment(p.get());
+    victim.treater = nullptr;
     ServerPlayerController* pc = nullptr;
     for (auto& c : controllers_) if (c->pawn == &victim) pc = c.get();
     victim.health = 0.0f;
@@ -1818,6 +1872,25 @@ bool World::BindPackageMap(const engine::MapManifest& manifest,
     }
     ConfigureGameMode(manifest, effective_level);
     if (!game_mode_level_.empty()) {
+        // Rules first: their team mission types decide assault/defend on
+        // the TeamInfos the round actors fill in.
+        std::string rules_json;
+        if (bundle && bundle->GetMissionRulesJson(rules_json)) {
+            LoadMissionRulesFromJson(rules_json);
+        } else if (bundle) {
+            // No mission in the bundle (training levels): don't show Bridge
+            // classic's mission text (the GRI defaults).
+            if (gri_) {
+                gri_->s_mission_name = bundle->MapName();
+                gri_->s_summary = bundle->MapName();
+                gri_->s_author.clear();
+                gri_->s_type.clear();
+                gri_->mission_briefings = {"", ""};
+            }
+            LOG_INFO("No mission rules in the bundle for %s", game_mode_level_.c_str());
+        } else {
+            LoadMissionRules("config/maps/" + game_mode_level_ + ".rules.json");
+        }
         std::string round_json;
         if (bundle && bundle->GetActorJson(engine::SectionType::kRoundActors, round_json)) {
             LoadRoundActorsFromJson(round_json);
@@ -1862,12 +1935,6 @@ bool World::BindPackageMap(const engine::MapManifest& manifest,
         match_actor_start_.clear();
         for (const auto& a : match_actors_) match_actor_start_.push_back(a->fields);
 
-        std::string rules_json;
-        if (bundle && bundle->GetMissionRulesJson(rules_json)) {
-            LoadMissionRulesFromJson(rules_json);
-        } else {
-            LoadMissionRules("config/maps/" + game_mode_level_ + ".rules.json");
-        }
     }
     // Breakable windows: map NetIndex -> manager bit (export_windows.py).
     window_index_.clear();
@@ -1989,6 +2056,8 @@ void World::Update(double delta_time) {
     clock_ += delta_time;
     UpdateMatch(delta_time);
     UpdateReloads();
+    UpdateGrenades(delta_time);
+    UpdateInjuries(delta_time);
     UpdatePostures(delta_time);
     UpdateIncapacitated(delta_time);
     UpdateDoors();
@@ -2061,6 +2130,14 @@ ServerPlayerController* World::CreatePlayerController(uint32_t owning_client_id,
     ServerMOSQualificationBCT* mos_ptr = mos.get();
     mos_quals_.push_back(std::move(mos));
     pc_ptr->mos_qual = mos_ptr;
+    for (uint32_t cdo : net_index::kMOSQualExtra) {
+        auto q = std::make_unique<ServerMOSQualificationBCT>();
+        q->object_index = BaselineIndex(cdo);
+        q->transient    = true;
+        q->label        = "MOSQual:" + pri_ptr->player_name;
+        pc_ptr->extra_mos_quals.push_back(q.get());
+        mos_quals_.push_back(std::move(q));
+    }
 
     auto proxy = std::make_unique<ServerPlayerStorageProxy>();
     proxy->object_index = BaselineIndex(net_index::kPlayerStorageProxy);

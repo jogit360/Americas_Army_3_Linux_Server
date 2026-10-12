@@ -3244,3 +3244,276 @@ at load; appended, so no other package's ObjectBase moves.
   (on the open only when set -- the GRI open is near the 4096-bit limit);
   PC `bCollideWorld`, spectate strings, `SpectatorMode`; proxy
   `bIsSpectating`; owner pawn Role/bNetOwner drop on unpossess.
+
+## 37. Weapons: every role's rifle, rail mods (sights), hand grenades (2026-10-11)
+
+### 37.1 What there is to build
+
+Every `wpnPrimaryOne` of the 286 role slots in the 18 baked retail maps is
+one of four rifles -- M4A1, M16A4, M16DMR, M249 -- all already kitted
+(sec 34). The rest of a soldier's weapons are the rail mods the role offers
+and the five grenade types:
+
+| rail (PRI `mriPrimaryWeaponOneMods`) | classes offered (AA3Baseline class export) |
+|---|---|
+| Main | `Sights_Iron_US_A3Handle` 35979 (always element 0), `CCO_US_M68comp4` 35972, `2x_ACOG_RCO` 35943, `35x_ACOG_RCO` 35952, `ACOG_RCO` 35933 |
+| Right | `Lights_Incan_M95` 35843 |
+| Bottom | `Weapon_XM320` 36153 (grenadiers) |
+
+Grenades: `AA_ThrowWeapon_M67` (frag, EInventoryType 5), `M83` (smoke, 3),
+`M84` (stun, 6), `M106` (smoke, 4), `AN_M14_TH3` (incendiary, 1).
+
+### 37.2 Rail mods, retail ground truth (GamePlayPCAP_Legit_Server)
+
+- Frame 204: role pick -> PRI `mriPrimaryWeaponOneMods` = element 0 of each
+  rail list (Iron sights + M95 light).
+- Client `ServerSetRailMod("PrimaryOne","Main",1)` -> frame 218 Main = CCO;
+  `ServerSetRailMod("PrimaryOne","Right",-1)` -> frame 234 Right = None.
+- Spawn (frame 366): one `AA_WeaponModSights_CCO_US_M68comp4` actor (Base
+  and ParentWeapon = the rifle); the rifle's `sWeaponSightType` names it and
+  `ModInventory` points at it. Mods chain through `AA_WeaponModBase.NextModPtr`
+  (`AA_Weapon.AttachWeaponModToRail`); `ParentRail` is
+  `eAttachmentRailType` (Main 0, Top 1, Bottom 2, Left 3, Right 4, Stock 5,
+  RearSight 6: 3 bits). `AA_WeaponModBase` fields: Health 23, Offset 24,
+  ParentRail 25, ParentWeapon 26, NextModPtr 27 (sights MaxIndex 30, M95 29,
+  XM320 32).
+
+### 37.3 Grenades, retail ground truth (third life, t=436-680)
+
+Six throws (M83, M67, M84, M106, M106, M67). The M67 at t=444.92:
+
+| t | client | server |
+|---|---|---|
+| 444.92 | IM `ServerSetCurrentWeapon(M67)` | pawn graph 4 {151->151}; PC `ClientSendHUDNotifyChangeInventoryCount(5, -1)` + `ClientAdvancedInventoryUpdateGrenadeCounts(5, False)` |
+| +0.23 | | M67 `bHidden`/`bHiddenByInvManager` False; `ClientNotifyChangedWeapon(M67, rifle)`; graph {151->80}; `ActiveInventory` = M67 |
+| +0.65 / +0.73 | | M67 `AttachedActor` = pawn; PRI `iFragGrenades` 2 -> 1 |
+| 446.01 | M67 `ServerStartFire` | `bPulledPin`; graph {89->90} (underhand after `SwitchThrowType`: {154->133}) |
+| 447.82 | `CookIt` | `bCooking`, `ClientStartCookingDelayedRestoreTimer()` |
+| 449.25 | `ServerStopFire` | graph {91->91} (underhand {93->92}) |
+| 449.74 | | graph {91->77}; projectile open: Location, Rotation, Velocity (Speed 1020.5 along the view), Instigator, `fExplodeTime` 3.1 (5 - 1.92 s cooked; left out when uncooked); a new M67 opens into `aatwPreloadedGrenades[0]`; the thrown one loses Owner/bNetOwner/AttachedActor; `ClientSwitchToBestWeapon(True)` |
+| 450.68 | IM `ServerSetCurrentWeapon(rifle)` | graph {150->79}, `ActiveInventory` = rifle, `ClientAdvancedInventoryUpdateGrenadeCounts(5, True)`, `ClientNotifyChangedWeapon(rifle, M67)` |
+| 452.80 | | projectile `Base`, `bCollideActors` False, `ClientHearSound` (the blast) |
+| 455.70 | | projectile channel closed |
+
+Every projectile closes exactly at its class `LifeSpan` (M67 6 s, M83 20,
+M84 16, M106 17). `ClientSendHUDNotifyChangeInventoryCount` has a third,
+optional `ClipIndex` (Send=0): 49 bits with NumClips -1. Class defaults read
+from AA3Baseline.u: `fExplodeTime` 5 (base; M67, AN-M14), 1 (M18 -> M83,
+M106), 2 (M84); M67 Damage 100 with `DamageLookupTable` {0: 100%, 262.5:
+100%, 350: 66.7%, 437.5: 33.7%, 525: 0} and damage classes
+`Explosion_Grenade_Death/Red/Yellow/Green`; AN-M14 Damage 10 within 175,
+BurnDuration 20 s, `AA_DamageType_Fire`; smoke and the M84 do no damage
+(their effects are the clients', from the replicated fuse).
+
+### 37.4 Implementation
+
+- `src/game/weapons.cpp`: role kits (moved from world.cpp), `BuildRailMods`
+  (one mod actor per filled PRI rail, cloned from retail's sight actor;
+  the role's own default sight only if the PRI has no rails at all),
+  `SetRailMod` (index into the role's list for that rail, -1 = None),
+  PRI grenade counts from the role at spawn, `TakeGrenade` /
+  `PutAwayGrenade` / `GrenadeAction` / `ThrowGrenade` with the timeline
+  above, `ReplaceGrenade` (a fresh copy of the spawn template's grenade),
+  projectile flight (world gravity; `AA_ThrowProjectile.Bounce`: velocity x
+  restitution then reflected; rests under `MinRollVelocity` 10), the M67
+  blast (lookup-table damage to soldiers in line of sight) and the AN-M14
+  burn (once a second). Bullets and blasts share `World::ApplyDamage`.
+- Protocol: IM `ServerSetCurrentWeapon` routes grenades in/out of the hand;
+  AA_ThrowWeapon RPCs 31/32/59/62 (60/65 ignored); PC `ServerSetRailMod`;
+  the tick opens new inventory to its owner and thrown grenades to every
+  player in the round, and closes them when gone.
+- PRI: `iFragGrenades`, `iSmokeGrenades`, `iM106SmokeGrenades`,
+  `iStunGrenades`, `iIncendiaryGrenades` (sent when changed; not on the open
+  when 0, the class default).
+- `tests/grenade_client.py`: two scripted players; rail pick -> 2x ACOG,
+  default iron + M95 for the other; M67 out, pin, cook, throw, back to the
+  rifle; projectile seen by both and closed at its LifeSpan. PASS.
+
+**Not modelled / guesses:** the XM320 is attached (visible) but has no
+40 mm rounds, pouches or firing -- no retail grenadier sample; the
+restitution (0.4) and the throw origin (31 units up, 25 forward) are
+guesses; the blast's `Base`/`ClientHearSound` aren't sent; M67 shrapnel
+traces and the prone "ultimate sacrifice" rule aren't modelled; retail's
+second replacement grenade ~1.47 s after each throw isn't repeated;
+`CurrentWeight` isn't updated; the "Frag out!" TeamMessage isn't sent.
+
+### 37.5 Fixes after the first real-client test (2026-10-11)
+
+- **M249 shots didn't hit.** The server put every rifle on semi after the
+  initial reload and counted every magazine as 30 rounds. The M249's
+  class defaults are `CurrentROF = ROF_Auto`, `bOpenBoltFire`, and its box
+  holds 200 (`AA_AmmoContainer_200x556mmBall_Box.RoundCount`): a held
+  trigger got one server trace, and after 30 rounds the server emptied the
+  gun (`ChamberedRound` None, bolt locked) and stopped tracing. Kits now
+  carry the rate they come off Safe to and the magazine's RoundCount
+  (`ServerPawn::mag_rounds`).
+- **Cooking (dropping the spoon) broke weapon switching.** Retail's server
+  runs the cook to its end even after the throw: `bCooking` False on the
+  cooked grenade at cook + fuse (t=452.80), then CookingDelayedRestoreTimer
+  (fuse + 0.25) -> RequestWeaponRestoreTimer (+0.9) -> PrevWeapon:
+  `InventoryManager.SetCurrentWeapon(rifle)` (client RPC 24) at cook +
+  6.15 s (t=453.94). Without it the client's own restore timer picks its
+  "previous weapon" -- which can be the grenade. Now modelled; `CookIt` is
+  accepted whenever a grenade is in hand (it's a global function in
+  `AA_ThrowWeapon`); a grenade held past its fuse sends
+  `ClientHolderDied()` (64) and goes off in the hand.
+
+## 38. Friend/enemy look: each side sees the other as the enemy force (2026-10-11)
+
+AA3 draws every soldier of the viewer's own team as a US soldier and every
+other soldier as the enemy force (OPFOR body, Obran weapons, U-series
+grenades) -- the `AA_SwapInfo_*` classes pair each US item with its enemy
+look. The choice is the client's, from team marks the server replicates:
+
+- `Actor.iOriginalOwningTeamIndex` (Engine Actor.uc: `if (bNetInitial &&
+  Role == ROLE_Authority) iOriginalOwningTeamIndex,
+  namePawnInventoryAssociation` -- *every* connection; Epic's comment:
+  "team index of original owner at spawn time and other swapping
+  support"). Default -1 (not owned).
+- `AA_Pawn.iBodyTeamIndex` (the body's team after death, when the pawn has
+  no PRI).
+
+Retail sets both on spawn (`AA_MCMissionManager`: `Pawn.iOriginalOwningTeamIndex
+= PRI.Team.TeamIndex`, `aap.iBodyTeamIndex = aapri.Team.TeamIndex`), and
+spawns the rifle with the owner's TeamIndex.
+
+The server sent `iOriginalOwningTeamIndex` only to the owner, `iBodyTeamIndex`
+as 0 for everyone, and the kit's items with retail's Black value 0: the
+other side reached a Black client as unowned/team 0 and was drawn as US
+soldiers (live client 2026-10-11). Now the pawn's team goes to every
+connection on the open, `iBodyTeamIndex` is the team, and the kit's
+`iOriginalOwningTeamIndex` is the owner's team. Verified on the wire with
+one bot per team: each sees the other's pawn with the other team's index.
+
+**Not done yet:** other players' weapons -- their inventory actors are
+opened only to their owner, so the third-person rifle (and its Obran look
+for enemies) isn't replicated to other players.
+
+## 39. IFAK treatment: retail ground truth (2026-10-11)
+
+Captured on the retail AA3Game server (LAN, PunkBuster off) with the real
+client treating a scripted teammate bot. Capture and decodes:
+`../captures/retail_ifak_2026-10-11.pcapng`,
+`../captures/ifak_decoded_2026-10-11/` (medic session 21:37-21:42; relative
+times below are from 21:37:00). Times t= are the decoder's.
+
+### 39.1 Medic -> server (PC channel)
+
+Each treatment attempt is one bunch:
+`ServerStartTreatment(sVictimSoldierName)` (213), `ServerStartPassiveTreatment()`
+(216), `SendCommoRequest(CommoType 42)` (AGP 485, the "Stop..." medic call),
+`ServerUse()` (76). It ends with `ServerStopTreatment()` (214) +
+`ServerWeaponRaise(bRaise=True)` (168). A symptom-based ("choice")
+treatment: `ServerStartTreatment` + `ServerUse`, then
+`ServerGiveActiveTreatment(TreatmentType='Saline', sVictimSoldierName)` (219),
+then `ServerStopTreatment` (t=199.63-204.78).
+
+### 39.2 Server -> medic (PC channel)
+
+Start: `ClientPlayShoutedVoice(sndVoice, pawnShouter = medic)`,
+`SetTreatmentOnRequestingClient(newPatient = patient's pawn)` (215),
+`NotifyWeaponReadyChange(False)`, `NotifyTacticalCombatPostureChange(True)`,
+`ClientReceiveRequestFriendly(42, bWhisper, PlayerIndex, Speaker = medic)`,
+`TeamMessage(PRI, 'Stop...', 'TeamSay')`. Stop:
+`ClientPlayShoutedVoice(..., pawnShouter = patient)`,
+`SetTreatmentOnRequestingClient()` (no patient), `NotifyWeaponReadyChange(True)`.
+A completed treatment scores `ClientNotifyScoringEventDetails(16, 8, +20)`.
+
+### 39.3 Patient pawn (as every client sees it)
+
+Wounded (t=7.87): `HealthTarget` 64.96, `bHasLowerBodyInjury`,
+`ReplicatedInjuryVariables[n]` {BleedRate 1.0, WoundTreatmentProgress[0..] 0},
+`RepNotifyInjuryVariables[n]` {WoundStatus[0] = {AA_Wound_Gunshot, step 0,
+eTreatmentLevel[0]}}, `bIsBleeding`; Health then drains ~1.2/s toward
+HealthTarget.
+
+Passive treatment (t=14.83-16.87, 2.04 s): at once `CurrentTreatmentTreater[0]`
+= medic, BleedRate 0, `bIsBleeding` False, `HealthTarget` 64.96 -> 76.6; then
+`WoundTreatmentProgress[0]` +1/60 every ~33 ms to 1.0; then
+`bHasLowerBodyInjury` False, WoundStatus[0] level 0 -> 1, treater None.
+Stopping early (t=57.97-58.10, 63.84-65.14) leaves the progress where it got
+to (0.0333, 0.6834) and the wound untreated.
+
+Incapacitation from bleeding (t=178.3-180.6): HealthTarget 6.56,
+`bPlayingInjuredAnims`, `IncapacitationType = AA_DamageType_Bleeding`,
+`bProxyInCrouchState`, then `bRagdollTick` + `bRagdollStuck`.
+
+Not yet worked through: the Saline active treatment's effect on the
+patient (t=199-205), the injury-array index n (12, 13, 16 over the
+session), and the patient's own-channel view.
+
+### 39.4 Revive, patient side (bot session, t=204.78)
+
+Patient's own pawn: `ClientRecapacitate()` (110), Health 25, RepGraphStates[0]
+{134}, [2] {74 -> 1}, IncapacitationType None, HealthTarget 12.875 (25 minus
+the bleed still owed, 18.73 - 6.59), bRecapacitated, bResetWeaponIK;
+GroundSpeed 124 at +0.26 s. Patient's PC: ClientSwitchToBestWeapon x5,
+`ClientNotifyDiscardInventory(7)` (the patient's own IFAK is used first),
+`ClientNotifyIncapacitated(False, instigator)`, ClientSetCameraMode
+('FirstPerson'), NotifyPostureChange('EndCrouch'), a +12 assist score.
+
+### 39.5 Implementation
+
+- `src/game/medic.cpp`: wounds per eHitLocation (head 1 = no wound, torso 3,
+  upper/lower right leg 12/13), a bullet hit's total (torso 40, legs 35)
+  split ~43% at once / ~57% bled out at 1.2 Health/s to HealthTarget;
+  bleeding to 25 incapacitates (AA_DamageType_Bleeding). Treatment:
+  StartTreatment (same team, 250 units, by soldier name), passive treatment
+  (bleeding off, HealthTarget = Health, most critical wound +0.5/s, treated
+  at 1.0), StopTreatment, GiveActiveTreatment (downed patient + an IFAK,
+  the patient's first -> Recapacitate as 39.4). Treatment links end on death.
+- Protocol: ServerStart/StopTreatment, ServerStartPassiveTreatment,
+  ServerGiveActiveTreatment, ServerWeaponRaise, SendCommoRequest decoded;
+  SetTreatmentOnRequestingClient + weapon ready/tactical notices to the
+  medic; the revive's ClientRecapacitate + PC notices to the patient; a used
+  IFAK's channel closes.
+- Pawn encoder: CurrentTreatmentTreater[0], ReplicatedInjuryVariables[l],
+  RepNotifyInjuryVariables[l] (None WoundType as the 12-bit dynamic None,
+  as retail), bHasLower/UpperBodyInjury, bRecapacitated, bResetWeaponIK to
+  every connection; Health/HealthTarget to non-owners after the open.
+- `tests/medic_client.py`: leg hit -> treat -> head shot -> Saline revive.
+  PASS; the patient's fields decode cleanly with aa3-tools' decoder.
+
+Not modelled: active treatments on a conscious patient (Saline etc. only
+revive here), multiple simultaneous treaters, scoring events, medic voice
+(ClientPlayShoutedVoice, the "Stop..." commo reply), the retail 33 ms
+progress cadence (ours follows the replication tick), arm/upper-torso
+locations beyond the three zones.
+
+### 39.6 Test bots on a retail server
+
+`tests/bot_client.py --retail NAME` logs in like the real client (HELLO ->
+CHALLENGE; NETSPEED + LOGIN RESPONSE=0 URL=...?Name=; HAVE per USES; JOIN)
+and plays round after round: ServerUpdateLevelVisibility for every
+ClientUpdateLevelStreamingStatus (without it the server drops the client at
+the next round's re-stream), role + ready at each ClientEnterPrePlanningTool,
+AskForPawn until Controller.Pawn names one, ServerAcknowledgePossession, the
+rifle drawn (retail's TakeDamage ignores a pawn whose first reload hasn't
+finished), and `--wander` to avoid the idle kill. Retail LAN server notes:
+`pb/pbsvgame.cfg` sv_punkbuster 0 disables PunkBuster; AA3Game.ini
+fpMaxROEAutoKick=0, bKickIdlePlayers=false, bAutoBalanceTeamsSizes=false --
+edited only while the server is down (it rewrites the ini on exit); the
+early-round ROE kick (15-25 s, same-team damage) is hard-coded; logins from
+one address under 10 s apart are banned as a DoS for 120 s.
+
+### 39.7 The client's treat prompt (2026-10-12)
+
+The "Treat Soldier" use prompt is client-side: the native context trace
+(CAT_TREAT_SOLDIER) and `CanTreat_Pawn` decide it from replicated state.
+On our server the patient's wound fields reached the medic intact (the
+gunshot WoundType decodes as `FieldName` with the retail resolver only
+because two `FieldName` objects sit 6 apart), yet no prompt appeared. Two
+medic-side differences from retail (`retail_ifak_2026-10-11.pcapng`, the
+medic's connection):
+
+- Retail opens the player's whole MOS set together, each with the same
+  empty 50-bit payload as BCT: DRMAIT (18079), GrenadierAIT (18091),
+  BCT (18071), **CombatMedic** (18032), ARAIT (18044), RiflemanAIT (18099)
+  -- LAN servers authorize every qualification. We opened BCT only.
+  `PRI.MedicQualification` isn't replicated ("set in native code").
+- Retail's PRI open carries `bHasReviveKit = True` (186), which
+  `AA_InventoryContainer_Pouch_IFAK` keeps in step with the IFAK pouch.
+
+Both are now sent: `ServerPlayerController::extra_mos_quals` (opened on
+free channels after Ch=5) and `PRI::has_revive_kit` (set from the kit,
+cleared when the last IFAK is used).

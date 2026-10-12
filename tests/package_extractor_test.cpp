@@ -1,8 +1,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 
+#include "engine/map_bundle.h"
 #include "engine/package_extractor.h"
 #include "engine/package_reader.h"
 #include "game/collision.h"
@@ -14,7 +16,11 @@ using namespace aa3::engine;
 int main(int argc, char** argv) {
     LOG_INIT();
     const char* pkg_path = argc > 1 ? argv[1] : "/home/odeyin/Documents/AA3/clean_packages/Bridge_night_clear.u";
-    const char* ref_col_path = argc > 2 ? argv[2] : "data/maps/Bridge_night_clear.aa3map";
+    const char* ref_col_path = argc > 2 ? argv[2] : "data/maps/Bridge_night_clear.aa3map.zst";
+    if (!std::filesystem::exists(pkg_path)) {
+        std::printf("SKIP: no %s (needs an AA3 install)\n", pkg_path);
+        return 77;
+    }
 
     std::printf("Testing PackageExtractor on %s ...\n", pkg_path);
     auto t0 = std::chrono::steady_clock::now();
@@ -63,7 +69,11 @@ int main(int argc, char** argv) {
     // 4. Parity test against Python-exported reference
     std::printf("\n--- Verifying Ray Tracing Parity vs Python reference (%s) ---\n", ref_col_path);
     game::CollisionWorld ref_world;
-    if (!ref_world.Load(ref_col_path)) {
+    MapBundle ref_bundle;
+    const uint8_t* ref_ptr = nullptr;
+    size_t ref_size = 0;
+    if (!ref_bundle.Load(ref_col_path) || !ref_bundle.GetCollisionData(ref_ptr, ref_size) ||
+        !ref_world.LoadFromMemory(ref_ptr, ref_size, ref_col_path)) {
         std::fprintf(stderr, "Failed to load reference col %s\n", ref_col_path);
         return 1;
     }

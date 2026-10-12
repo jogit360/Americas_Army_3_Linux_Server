@@ -25,6 +25,9 @@ struct ServerRoundActor : ServerActor {
     std::string cdo_package;     // where its class default object lives
     uint32_t cdo_net_index = 0;
     std::vector<DataField> fields;
+    // Destroyed this round (an emptied ES2 perk): its channels close; the
+    // level reset brings it back.
+    bool gone = false;
 
     // Insert or replace the field at (idx, elem).
     void Set(uint32_t idx, int32_t elem, const DataValue& v);
