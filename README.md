@@ -25,7 +25,8 @@ cd aa3-linux-server
 mkdir -p build && cd build
 cmake .. && make -j$(nproc)
 cd ..                                   # the server reads config/ relative to here
-build/aa3_server -c config/aa3_server.ini --standalone
+build/aa3_server -l                     # list the available maps
+build/aa3_server -c config/aa3_server.ini --standalone -m Bridge_night_clear
 ```
 Clients connect by IP (console `open <ip>:8777`) or through the in-game LAN
 browser. `--steam` (default) also advertises to the Steam master server.
@@ -54,7 +55,7 @@ browser. `--steam` (default) also advertises to the Steam master server.
 | Breakable windows, doors, ES2 objects | done |
 | Damage by hit zone; wounds that bleed out to a HealthTarget (43% at once / 57% bled at 1.2 hp/s); incapacitation (bleed-out, withdraw); death | done (retail-matched) |
 | Round end: elimination, extraction, time limit; scoreboard; next round; 6-round match | done (bot-tested) |
-| Multi-map CLI: `--map <name>` / `-m <name>` argument | done (supports all 18 retail maps) |
+| Multi-map CLI: `--map <name>` / `-m <name>`, `--list` / `-l` | done (supports all 18 retail maps) |
 | IFAK treatment: passive treatment (stop bleeding, treat the wound), Saline revive of a downed teammate | done (bot-tested); real-client treat prompt fix awaiting test |
 | Other active treatments (tourniquet, dressings...) on a conscious soldier, multiple treaters, medic scoring/voice | not started |
 | Dropped weapons, M320 rounds, TAH/VIP/other modes | not started |
