@@ -3,7 +3,7 @@
 fake_client.py / grenade_client.py.
 
 A and B join Black; A stands 200 units from B, draws its rifle, and after the
-initial reload:
+initial reload (A steps to 100 units to treat -- retail's reach is 120):
   1. shoots B in the upper leg -> B is wounded and bleeding;
   2. treats B (ServerStartTreatment('Player2') + ServerStartPassiveTreatment,
      2.5 s, ServerStopTreatment) -> bleeding stops, the wound is treated;
@@ -35,6 +35,27 @@ REP_START_TREATMENT, REP_STOP_TREATMENT = 213, 214
 REP_START_PASSIVE, REP_GIVE_ACTIVE = 216, 219
 REP_SET_TREATMENT = 215                   # SetTreatmentOnRequestingClient (to the medic)
 PAWN_CLIENT_RECAPACITATE = 110            # AA_Pawn.ClientRecapacitate
+
+
+KIT_RIFLES = {5251: 71, 5153: 71, 5157: 71, 5245: 72}   # kit rifle CDO -> MaxIndex
+GRENADE_SET = (CDO_M67, 33062, 33088, 33070, 33037)
+
+
+def draw_rifle(c):
+    """Draw the kit rifle (InventoryManager.ServerSetCurrentWeapon). Its initial
+    reload is what ends a new soldier's damage immunity (retail
+    bFirstReloadFinished), so a soldier meant to be shot has to draw too."""
+    if c.base is None:
+        with c.lock:
+            by_ch = dict(c.ch_class)
+        for ch, o in by_ch.items():
+            if all(by_ch.get(ch + k) == o - CDO_M67 + g for k, g in enumerate(GRENADE_SET)):
+                c.base = o - CDO_M67
+    rifle = next(((ch, mx) for cdo, mx in KIT_RIFLES.items() for ch in c.channels_of(cdo)), None)
+    im = c.channels_of(CDO_IM)
+    if rifle and im:
+        c.set_current_weapon(im[0], rifle[0])
+    return rifle
 
 
 class MedicClient(WeaponsClient):
@@ -112,18 +133,19 @@ def main():
         print("FAIL: no rifle")
         return 1
 
-    aim = {"pitch": 0}
+    aim = {"pitch": 0, "x": 11385.0}
     stop = threading.Event()
     def mover():
         ts = 1.0
         while not stop.is_set():
             ts += 0.05
-            A.send_move(ts, (11385.0, -3308.0, 65.0), yaw=0, pitch=aim["pitch"] & 0xFFFF)
+            A.send_move(ts, (aim["x"], -3308.0, 65.0), yaw=0, pitch=aim["pitch"] & 0xFFFF)
             B.send_move(ts, (11585.0, -3308.0, 65.0), yaw=32768)
             time.sleep(0.05)
     threading.Thread(target=mover, daemon=True).start()
 
     A.set_current_weapon(im[0], rifle[0])
+    draw_rifle(B)                                          # B can be hurt once its reload ends
     time.sleep(8.0)                                        # initial reload
 
     def shoot(pitch):
@@ -133,6 +155,7 @@ def main():
         A.call(rifle[0], RIFLE_MAX, REP_STOPFIRE); time.sleep(0.5)
 
     shoot(-2849)                                           # upper leg (z ~40 at 200 units)
+    aim["x"] = 11485.0                                     # step up to the patient
     time.sleep(1.0)
     n = len(A.pc_calls)
     A.pc_string(REP_START_TREATMENT, "Player2")
@@ -142,7 +165,10 @@ def main():
     time.sleep(0.6)
     treat_calls = A.pc_calls[n:]
 
+    aim["x"] = 11385.0                                     # back to 200 units to shoot
+    time.sleep(0.5)
     shoot(469)                                             # head (z ~105)
+    aim["x"] = 11485.0
     time.sleep(1.5)
     n = len(A.pc_calls)
     A.pc_string(REP_START_TREATMENT, "Player2")

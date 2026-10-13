@@ -3517,3 +3517,209 @@ medic's connection):
 Both are now sent: `ServerPlayerController::extra_mos_quals` (opened on
 free channels after Ch=5) and `PRI::has_revive_kit` (set from the kit,
 cleared when the last IFAK is used).
+
+## 40. Co-op AI missions: Bridge AI (2026-10-12)
+
+Retail server run as `Bridge_night_clear?MissionType=co?MissionVariant=ai`
+(sub-level `Bridge_inf_co_large_ai`), one real client plus bots. Capture,
+decodes and notes: `../captures/retail_bridge_ai_2026-10-12.pcapng`,
+`../captures/bridge_ai_2026-10-12/` (`FINDINGS.md`, `timeline.txt`).
+Our server runs it with `-m Bridge_inf_co_large_ai` (a bundle named after
+the mission, header map `Bridge_night_clear`).
+
+### 40.1 Ladders from the top
+
+Mounting a ladder from above starts with the same move as a vault:
+`AA_Pawn.ServerStartMoveToTarget(TargetLocation, TargetRotation,
+FinishMoveCallback, fMinDistanceToTarget)` (pawn 97). Wire layout: Send +
+compressed vector; Send + rotator (per component a bit + byte); Send +
+delegate = object (bDynamic + channel, here the pawn) + the function's FName
+(FString + INT number); Send=0 for the float. The callback names the move:
+`FinishLadderMoveToTarget` (a ladder) or a vault's. Retail, 13:37:53:
+`bAdvMvmt_MovingToTarget` True, 0.14 s later `ClientFinishLadderMoveToTarget()`
+(pawn 102) and False; the client then sends `ServerClimbLadder(L)` ->
+ClientSlingWeapon, gravity off, graph 2 {174}, graph 3 **{23}** at +0.47 s;
+at the bottom `ServerEndClimbLadder` -> graph 2 {7}, graph 3 **{22 -> 0}**
+(from below: {117}, top {11 -> 0}). Our server answered every move with
+`ClientFinishVaultMantleMoveToTarget` (100) and the vault states, which the
+client took for a vault: the "can't climb down" bug.
+
+### 40.2 The carried objective (briefcase)
+
+- Join: `AA_Objective_Briefcase_US` (CDO 26202, MaxIndex 29) at the factory
+  (AttachInfo {-1, 'SpineBSocket'}); the placed `AA_PickupFactory_Objective`
+  (Location, bBlockActors, Inv = the briefcase); `AA_MCCarryableObjectiveMarker`
+  (CDO 15660, MaxIndex 35: MyLocation, PreplanSymbol (2 bits),
+  aLinkedObjectiveItems[0] = MyFactory = the factory).
+- Pickup: `ServerRepExec('Pickup', ContextActor = factory)` (PC 189) +
+  `ServerUse`. The briefcase channel closes and a fresh one opens. To the
+  carrier: Owner, Instigator, bNetOwner, iOriginalOwningTeamIndex,
+  InvManager, AttachInfo, `ClientGivenTo(pawn)`, then AttachedActor. To
+  others: Instigator, namePawnInventoryAssociation, team, AttachInfo,
+  AttachedActor. Factory bCollideActors/bBlockActors False, Inv None; marker
+  bHideSAIIcon. Carrier: `SetNotificationMessage('Your team has picked up the
+  objective!')` + `ReceiveLocalizedMessage(Engine.LocalMessage, , , ,
+  class AA_Objective_Briefcase_US)`.
+- Carrier killed: briefcase Owner/Instigator/AttachedActor None, bNetOwner
+  False; `AA_DroppedObjective` (CDO 7016, MaxIndex 34) opens at the body:
+  Rotation, Velocity (0,0,-70), Physics Falling (4 bits), then None,
+  ReplicatedCollisionType 3 (3 bits), bBlockActors, InventoryClass, Mesh
+  (retail's bits `1` + 2047), MyObjectiveMarker, aapfParentFactory. Carrier:
+  `ClientSendObjectiveDroppedNotification` + `ClientNotifyDiscardInventory(22)`.
+  It can't be dropped by choice. Players report that a downed carrier can
+  hand it to a teammate; that isn't in the capture.
+- Win: the carrier in its team's extraction zone. Which team extracts where
+  comes from the Kismet objective variables
+  (`AA_MCObjectiveLocationSeqVar_Object.oObjectiveData.EXT_iRequiredTeamOverride`),
+  not the marker's iExtractingTeam: Black -> Zulu, Gold -> X-ray. Retail
+  replicates iExtractingTeam as is, plus iRequiredTeamOverride when nonzero.
+- Time limit: the human team lost (`ClientGameEnded(bIsWinner False)`, the
+  defeat stinger).
+
+### 40.3 Reinforcements (F5)
+
+`ServerRequestRespawn()` (PC 252) while dead or spectating, only where the
+level has `AA_MCPlayerRespawnMarker`s (12 per team on Bridge AI). The player
+is queued ("You are now waiting for your reserve fireteam ...", "Stand by
+for deployment ...", "from readily available stores."). Every 10 s each
+team's queue deploys, up to 4, at an enabled marker of the team unused for
+15 s ("You have just hit the LZ with your reserve team"). Then the usual
+spawn sequence (ClientRestart, HUD inventory, DisplayMissionBriefing,
+ClientMatchStarting, Pawn = the new pawn) and two more messages. The round
+doesn't end when a team is all down: players can still come back.
+
+### 40.4 Enemy NPCs
+
+35 spawn at match start: up to the level's cap, and no more than 46 minus
+the players. They spawn at the pathing level's 40
+`AA_NPCEnemyPlayerStart`s (aabwWeaponClass: ObranKNP by default, else
+ObranMSP / ObranLMK). On the wire:
+- **Pawn only.** Only the `AA_NPCEnemyPawn` (CDO 21100, MaxIndex 139 =
+  AA_Pawn's 131 + AA_NPCPawn's) is sent, with no controller and no PRI. Its
+  open has namePawnInventoryAssociation ('AA_NPCEnemyPawn_38'_96),
+  iBodyTeamIndex 4, sBodySoldierName = `sNPCName` (131), and no
+  iOriginalOwningTeamIndex.
+- **Gear opened with it.** Its gear opens with it: ObranKNP (bHidden False,
+  Instigator, AttachedActor, CurrentAmmoType = ChamberedRound[0] =
+  AA_AmmoType_556mmBall, LastInventoryContainer = chest slot,
+  LoadedMagazine[0]), a magazine (`AA_AmmoContainer_NME_30x556mmBall`,
+  RoundIndex 1, attached to the rifle), a dump pouch ('DumpPouchSocket'), and
+  the chest and right-shoulder weapon slots. The pawn's
+  DumpPouch / NextMagPouch / NextStorageMagPouch / ActiveInventory go to
+  everyone.
+- **Updates.** Movement, posture graphs and FlashCount (shots) update the
+  NPC. Damage replicates exactly as a player's does (Health, HealthTarget,
+  injuries, PawnShotEffectInfo).
+- **Neutralizing one.** The killer gets
+  `ClientNotifyNeutralizedNME(name, False)` +
+  `ClientNotifyScoringEventDetails(7, , , 32, +10)`. Players report bodies
+  with `SendEnemyDownRequest(name, interactor)` + ServerUse.
+- **Relevancy.** Retail opens and closes NPCs by relevancy (249 opens in
+  22 minutes); ours opens every live one.
+
+Our AI (`src/game/npc.cpp`) is a first cut. It holds the start, turns to the
+nearest player soldier in line of sight within 5000 units, and fires
+3-round bursts after a 0.8-1.6 s reaction, with distance-scaled spread. When
+hit, it turns toward the shooter. It doesn't yet move between the 119 firing
+positions (baked), patrol, take cover or use grenades.
+
+### 40.5 Channel reuse and reliable sequences
+
+UE3 keeps `InReliable`/`OutReliable` per channel index for the whole
+connection, so a reopened channel continues its numbering. Retail closed the
+briefcase's ch 15 at R2 and reopened it at R3. Our server had restarted a
+reopened channel at sequence 1, which a real client drops as an old bunch
+(this affected the own pawn's ch 11 after a respawn). It now continues the
+sequence, and reuses a closed channel index 5 s after the close. Before
+this, every round's NPC channels would have run out the 2048 indexes in
+about nine rounds.
+
+### 40.6 A bot through the whole mission, retail and ours (2026-10-12)
+
+`tests/mission_bot.py` plays Bridge AI start to finish on either server
+(`--retail NAME` for a retail AA3Game server). It joins Black, draws its
+rifle, walks to Yankee, picks up the case, sprints it to its team's zone,
+fights NPCs on the way, and after a death withdraws and presses F5. It walks
+on routes from `aa3_navgrid`, a walkable grid built from the bundle's
+collision (`src/game/navgrid.cpp`). Retail's server log confirmed
+"Extraction Entered by MissionBotB" twice; on ours, "Round 2 over
+(extraction): team 0 wins". What the runs showed about retail:
+
+- **Movement input.** The client sends `ServerMove.InAccel` as the
+  acceleration times 10, magnitude 7680 while walking; a scripted move with
+  a small InAccel barely moves the pawn. Walking speed is 200, sprinting 316
+  (`ServerHoldSprint`).
+- **Rounds end on team death.** The round ends as soon as Black has nobody
+  up, even with respawn points; F5 helps only while a teammate lives.
+  `ClientGameEnded(bIsWinner)` was False for the extractor on a win.
+- **Spawn protection.** A soldier can't be hurt until his drawn rifle's
+  initial reload ends (`bFirstReloadFinished`). Ours now does the same.
+- **Sights and the tactical stance.** Raising the sights puts the soldier in
+  the tactical stance, and it outlasts the sights: lowering them goes to
+  weapon graph {22}, with NotifyWeaponReadyChange(True) and
+  NotifyTacticalCombatPostureChange(True). Ours went to the relaxed {11}, and
+  the real client then kept the ACOG's focus blur.
+- **Flood protection.** Logging in twice from one IP within 10 s gets
+  banned ("Invalid JOIN DoS").
+
+Map collision bugs found because the bot got stuck where retail let it pass,
+or passed where retail stopped it:
+
+- **Prefab templates.** They were taken as placed actors at the origin; a
+  sun lens-flare template made a 14,400-unit wall through Bridge. Only
+  actors whose outer is a Level are collision now (16 of the 19 bundles
+  changed).
+- **Blocking volumes.** `BlockingVolume` and `AA_PlayerBlockingVolume`
+  brushes are now soldier-only collision (kBlockPawn): they stop soldiers,
+  not bullets.
+- **Grid details.** Buildings have more than 4 floors (the grid keeps 12).
+  Crouch-height passages exist. A soldier needs about 26 units of clearance
+  around him.
+
+NPC tuning against the retail run: retail's first NPC fired 23 rounds in
+160 s. Ours now react in 1.5-3 s, see 3000 units within ~75 degrees of where
+they face (all round within 600), fire 3-round bursts with 2-4 s pauses and
+about 6 degrees of spread, and spawn on the floor under their marker.
+
+### 40.7 NPC AI, relevancy, dropped rifles, hand-off, countdown, movement checks (2026-10-12)
+
+- **NPC movement** (`npc.cpp`). The server builds `NavGrid` (48-unit cells,
+  over the NPCs' area plus 1500) in a background thread from a copy of the
+  collision, about 25 s on Bridge; NPCs hold position until it's ready.
+  - Patrols: an idle NPC walks (170) every 25-50 s to a firing position
+    within 1200 of its start.
+  - Contact: on spotting a soldier it runs (300) to the nearest firing
+    position within 700 that sees him, and doesn't fire on the move.
+  - Fighting: from a stand it crouches, and the pawn drops 14 so it matches
+    the crouched hit cylinder.
+  - Grenades: 4-15 s after losing a soldier 400-1500 away, it lobs a U23A1
+    frag (`AA_ThrowProjectile_U23A1`, retail's NPC grenade) on the arc that
+    reaches his last position, at most every 25-45 s.
+- **NPC relevancy.** An NPC opens to a player within 5000 units of his
+  soldier and closes past 6000; a player with no soldier uses his last
+  location.
+- **Dropped rifles.** A killed NPC drops `AA_DroppedPickup_Obran{KNP,MSP,LMK}`
+  (CDO 7130/7134/7132, MaxIndex 30), as retail's frame 12295 shows. It opens
+  falling, with Rotation, Velocity, ReplicatedCollisionType 3, bBlockActors,
+  InventoryClass, Mesh (retail's bits), InventoryTeam (TeamInfo 4) and
+  `LoadedMagazines[0]` = {ammo class, 30 (LMK: 200), round index}. After
+  0.12 s it rests on the floor (Physics None), and it closes after 120 s
+  (`fpMaxNPCDroppedWeaponLifeTimeSeconds`). Picking a dropped rifle up isn't
+  modelled.
+- **Hand-off** (AA_PlayerController.SafeDropObjective). A carrier who goes
+  down gets `ClientNotifyIncapacitatedWithObjective()` (PC 240); his
+  `ServerDropObjective(bDebugDropping)` (PC 239) drops the case 50 units in
+  front of him, and a teammate picks it up from the ground.
+- **Reinforcement countdown.** GRI `fpRespawnTimeSeconds` (78) counts down
+  to the next wave by the second; `iRespawnPlayersNeededTeam0/1` is the
+  minimum players to deploy less those queued (retail's formula).
+- **Movement checks** (INI `MovementChecks`, default on). A ServerMove's
+  ClientLoc is refused when it is:
+  - from a downed or dead soldier;
+  - faster than 650 units/s plus 60;
+  - through static `kBlockPawn` geometry at both knee and chest height,
+    except during a vault or move-to-target or on a ladder.
+
+  A refused move gets an unreliable `ClientAdjustPosition` back to the last
+  good spot, at most every 0.2 s. Scripted protocol tests that place their
+  soldiers by teleporting set `MovementChecks = 0`.

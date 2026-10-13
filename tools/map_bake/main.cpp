@@ -512,6 +512,7 @@ int DoBake(const std::string& pkg_path,
     if (sub_pkg) {
         std::string templates, terr;
         MissionExtractor mx(*sub_pkg, gametype_level, pkg, map_name);
+        for (const auto& sh : shards) mx.AddShard(&sh);
         if (!ReadFileString(role_templates_path, templates) || !mx.LoadRoleTemplates(templates, &terr)) {
             std::cerr << "  [-] Error: role templates " << role_templates_path << " " << terr << "\n";
             return 1;
@@ -620,7 +621,14 @@ struct MapBakeTarget {
     const char* folder;
     const char* base_map;
     const char* sublevel;
+    const char* bundle = nullptr;   // bundle name if not the map's (a second mission on a map)
 };
+
+// The bundle's file stem: the map's, or the mission's for a second mission
+// on the same map (Bridge_inf_co_large_ai = Bridge AI on Bridge_night_clear).
+std::string BundleStem(const MapBakeTarget& t) {
+    return t.bundle ? t.bundle : std::filesystem::path(t.base_map).stem().string();
+}
 
 static const MapBakeTarget kRetailMaps[] = {
     {"Airfield", "Airfield_day_cloudy.aa3", "Airfield_inf_co_large_dev.aa3"},
@@ -628,6 +636,7 @@ static const MapBakeTarget kRetailMaps[] = {
     {"Alley", "Alley_day_foggy.aa3", "Alley_inf_tah_large_east.aa3"},
     {"Bridge", "Bridge_night_clear.aa3", "Bridge_inf_classic_large_dev.aa3"},
     {"Bridge", "Bridge_day_fog.aa3", "Bridge_inf_ao_large_dev1.aa3"},
+    {"Bridge", "Bridge_night_clear.aa3", "Bridge_inf_co_large_ai.aa3", "Bridge_inf_co_large_ai"},
     {"Classroom", "Classroom_CLS.aa3", "Classroom.aa3"},
     {"ConexMOUT", "ConexMOUT.aa3", "ConexMOUT_bct_MOUT.aa3"},
     {"Impact", "Impact_day_cloudy.aa3", "Impact_inf_ao_large_dev1.aa3"},
@@ -721,7 +730,7 @@ int DoBatchBake(std::string cooked_maps_dir,
             }
         }
 
-        std::string map_stem = std::filesystem::path(target.base_map).stem().string();
+        std::string map_stem = BundleStem(target);
         std::string out_path = (std::filesystem::path(out_dir) / (map_stem + ".aa3map")).string();
 
         std::cout << "\n----------------------------------------\n"
@@ -761,7 +770,7 @@ int DoVerify(const std::string& cooked_maps_dir, const std::string& bundles_dir,
     auto section_name = [](uint32_t t) { return std::string(SectionTypeName(static_cast<SectionType>(t))); };
     int ok = 0, bad = 0;
     for (const auto& target : kRetailMaps) {
-        const std::string stem = std::filesystem::path(target.base_map).stem().string();
+        const std::string stem = BundleStem(target);
         std::filesystem::path shipped = std::filesystem::path(bundles_dir) / (stem + ".aa3map.zst");
         if (!std::filesystem::exists(shipped)) shipped = std::filesystem::path(bundles_dir) / (stem + ".aa3map");
         const std::filesystem::path fresh = tmp / (stem + ".aa3map");

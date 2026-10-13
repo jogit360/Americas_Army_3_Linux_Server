@@ -63,6 +63,8 @@ void WriteRPCBoolParam(util::BitWriter& w, bool value);
 // (Send=0 for both — Name "None", float 0.0) — this server has no
 // message-type categorization or custom message durations yet.
 void BuildClientMessageRPC(util::BitWriter& w, const std::string& message);
+// ...with a message Type (retail's co-op notices: 'Notification').
+void BuildClientMessageRPC(util::BitWriter& w, const std::string& message, const std::string& type);
 
 // Engine.Controller.ClientSetRotation(rotator NewRotation, optional bool
 // bResetCamera) — rep::PC::ClientSetRotation. Orients the client's pawn/camera.

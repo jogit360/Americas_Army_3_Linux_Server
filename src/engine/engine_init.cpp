@@ -99,9 +99,6 @@ bool Engine::Initialize(const std::string& config_path) {
     LOG_INFO("  Mode: %s",        config_.standalone ? "STANDALONE (no Steam)"
                                                      : "Steam-authenticated");
 
-    // Initialize world state with configured map
-    world_.Initialize(config_.map_name);
-
     // Try loading unified MapBundle first (data/maps/<map_name>.aa3map)
     // The shipped maps are data/maps/<map>.aa3map.zst; an uncompressed
     // .aa3map beside it (a local re-bake) takes precedence.
@@ -116,6 +113,14 @@ bool Engine::Initialize(const std::string& config_path) {
             auto m = bundle->GetManifest();
             if (m) {
                 map_manifest_ = std::move(*m);
+                // A mission bundle (e.g. Bridge_inf_co_large_ai, Bridge AI)
+                // is named after its mission; the map the client loads is
+                // the bundle's own map name.
+                if (!bundle->MapName().empty() && bundle->MapName() != config_.map_name) {
+                    LOG_INFO("Bundle '%s' is mission %s on map %s", config_.map_name.c_str(),
+                             bundle->GameModeLevel().c_str(), bundle->MapName().c_str());
+                    config_.map_name = bundle->MapName();
+                }
                 map_bundle = std::move(bundle);
                 LOG_INFO("Using unified map bundle '%s'", bundle_path.c_str());
             } else {
@@ -172,7 +177,8 @@ bool Engine::Initialize(const std::string& config_path) {
         }
     }
 
-    // Initialize world with manifest and bundle
+    // Initialize world state with the map, then bind manifest and bundle
+    world_.Initialize(config_.map_name);
     if (!world_.BindPackageMap(*map_manifest_,
                                GetConfigValue("GameModeLevel", ""),
                                map_bundle.get()))
@@ -184,6 +190,8 @@ bool Engine::Initialize(const std::string& config_path) {
     world_.SetRespawnDelay(std::atof(GetConfigValue("RespawnDelay", "0").c_str()));
     world_.SetIncapBleeding(GetConfigValue("IncapBleeding", "true") != "false");
     world_.SetTimeLimit(GetConfigInt("MissionTimeLimit", 0));
+    world_.SetEnemyNPCs(GetConfigInt("EnemyNPCs", 1) != 0);     // AI missions' enemy soldiers
+    world_.SetMovementChecks(GetConfigInt("MovementChecks", 1) != 0);
 
     for (int t = 0; t < 2; ++t) {
         std::string sp = GetConfigValue("SpawnPoint" + std::to_string(t), "");
@@ -223,10 +231,15 @@ bool Engine::Initialize(const std::string& config_path) {
             base.host_name = config_.server_name;
             base.map_name = config_.map_name;
             base.max_players = config_.max_players;
-            base.mission_type = GetConfigValue("MissionType", "co");
+            // The mission's type and variant, as the level name gives them
+            // (Bridge_inf_co_large_ai -> co / ai); the INI overrides.
+            const auto* gri = world_.GetGRI();
+            const std::string type = gri && !gri->s_mission_type.empty() ? gri->s_mission_type : "co";
+            const std::string variant = gri && !gri->s_mission_variant.empty() ? gri->s_mission_variant : "ai";
+            base.mission_type = GetConfigValue("MissionType", type);
             base.mission_size = GetConfigValue("MissionSize", "large");
             base.mission_tour = GetConfigValue("MissionTourID", "inf");
-            base.mission_variant = GetConfigValue("MissionVariant", "ai");
+            base.mission_variant = GetConfigValue("MissionVariant", variant);
             beacon->SetInfoProvider([this, base]() {
                 auto info = base;
                 info.player_count = static_cast<int>(world_.GetPlayerControllers().size());

@@ -753,7 +753,7 @@ TraceHit CollisionWorld::LineTrace(const Vec3& start, const Vec3& end, uint8_t m
         } else if (best_inst && best_mesh_tri) {
             Vec3 lnrm = Cross(best_mesh_tri->e1, best_mesh_tri->e2);
             nrm = TransformVec(lnrm, best_inst->inv_trans);
-            best.triangle = 0;
+            best.triangle = 0x80000000u | static_cast<uint32_t>(best_inst - instances_.data());   // instance hit
         }
         const float len = std::sqrt(Dot(nrm, nrm));
         if (len > 0) nrm = {nrm.x / len, nrm.y / len, nrm.z / len};

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Three-bot IFAK scenario against aa3_server (doc sec 39), on medic_client.py.
 
-  Medic   (Black) stands 150 units beside the patient, rifle lowered.
+  Medic   (Black) stands 100 units beside the patient (retail reach: 120), rifle lowered.
   Patient (Black) stands still, 200 units in front of the enemy.
   Enemy   (Gold)  draws its rifle and, after the initial reload:
     1. shoots the patient in the upper leg -> wounded, bleeding;
@@ -21,7 +21,7 @@ import time
 
 import fake_client as fc
 from grenade_client import CDO_M67, CDO_IM
-from medic_client import (MedicClient, REP_START_TREATMENT, REP_STOP_TREATMENT, REP_START_PASSIVE,
+from medic_client import (MedicClient, draw_rifle, REP_START_TREATMENT, REP_STOP_TREATMENT, REP_START_PASSIVE,
                           REP_SET_TREATMENT, PAWN_CLIENT_RECAPACITATE, REP_STARTFIRE, REP_STOPFIRE)
 
 RIFLES = {5251: 71, 5153: 71, 5157: 71, 5245: 72}   # kit weapon CDO -> MaxIndex
@@ -90,11 +90,12 @@ def main():
             ts += 0.05
             enemy.send_move(ts, (11385.0, -3308.0, 65.0), yaw=0, pitch=aim["pitch"] & 0xFFFF)
             patient.send_move(ts, (11585.0, -3308.0, 65.0), yaw=32768)
-            medic.send_move(ts, (11585.0, -3158.0, 65.0), yaw=49152)
+            medic.send_move(ts, (11585.0, -3208.0, 65.0), yaw=49152)
             time.sleep(0.05)
     threading.Thread(target=mover, daemon=True).start()
 
     enemy.set_current_weapon(im[0], rifle[0])
+    draw_rifle(patient); draw_rifle(medic)                 # damage immunity ends with the initial reload
     time.sleep(8.0)                                        # initial reload
 
     def shoot(pitch):

@@ -95,11 +95,14 @@ struct ClientSession {
     // The pawn this client was last given (PossessPawn; doc sec 29).
     const game::ServerPawn* possessed_pawn = nullptr;
     bool match_opened = false;
+    bool objectives_opened = false;
+    int32_t died_in_round = -1;            // GRI round of the last death: a spawn in it is a respawn        // World::ObjectiveActors() kept in sync
+    uint32_t objective_pickup_sent = 0, objective_drop_sent = 0, objective_incap_sent = 0;
     uint32_t match_actor_serial_seen = 0;  // World::MatchActorSerial() of the open ES2 set
     uint64_t next_wait_state_us = 0;       // next ClientGotoState('WaitingForMatchStart')
     uint32_t confirm_reload_sent = 0, mag_count_sent = 0;  // ServerPawn reload serials sent
     uint32_t breath_end_sent = 0;                           // ServerPawn::breath_end_serial sent
-    uint32_t hit_sent = 0, sling_sent = 0, vault_sent = 0;  // ServerPawn notice serials sent
+    uint32_t hit_sent = 0, sling_sent = 0, vault_sent = 0, ladder_sent = 0;  // ServerPawn notice serials sent
     uint32_t switch_best_sent = 0;                          // ServerPawn.switch_best_serial sent
     uint32_t weapon_restore_sent = 0, holder_died_sent = 0; // ServerPawn cook notices sent
     uint32_t recap_sent = 0;                                // ServerPawn.recap_serial sent
@@ -165,7 +168,17 @@ struct ClientSession {
     // Other players, keyed by their client id. Channels 2..12 are this
     // client's fixed initial burst; remote players allocate from 13 up.
     std::map<uint32_t, RemotePlayerChannels> remote_players;
+    // Enemy NPC soldiers open on this connection (pawn only, as retail).
+    std::map<const game::ServerPawn*, RemotePlayerChannels> npc_channels;
+    uint32_t npc_kill_sent = 0;
+    float view_loc[3] = {0, 0, 0};          // this player's last soldier location (NPC relevancy)
+    bool have_view_loc = false;
+    uint32_t refused_moves = 0;             // moves failing the movement checks
+    uint64_t next_correction_us = 0;
     uint32_t next_free_channel = 13;
+    // Closed dynamic channels and when, for reuse once the close has surely
+    // been acknowledged (ProtocolHandler::AllocChannel).
+    std::deque<std::pair<uint32_t, uint64_t>> freed_channels;
 
     // Reliability (doc sec 25), mirroring UNetConnection/UChannel.
     // Outgoing: every reliable bunch stays in `out_rec` until acked; a
@@ -312,6 +325,9 @@ private:
     // movement goes out unreliably on its own faster cadence.
     void SyncRemotePlayers(uint32_t client_id, ClientSession& sess, uint64_t now_us,
                            bool reliable_tick);
+    // A free actor channel: a closed one at least 5 s ago, else the next
+    // unused index; 0 when all 0x800 are taken.
+    uint32_t AllocChannel(ClientSession& sess);
     void CloseActorChannel(uint32_t client_id, uint32_t ch_index);
 
     // The map's streaming sublevels and whether each is loaded+visible for

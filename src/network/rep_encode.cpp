@@ -287,6 +287,11 @@ uint32_t EncodeGRIRep(BitWriter& w, const ServerGameReplicationInfo& cur,
     GRI_BOOL(bShowOpponentExtractionVolume, show_opponent_extraction_volume);
     GRI_BOOL(bAllowSpectatorBFT, allow_spectator_bft);
     GRI_BOOL(bAllowSpectatorsBackOntoTeams, allow_spectators_back_onto_teams);
+    if (prev ? prev->respawn_time_seconds != cur.respawn_time_seconds : cur.respawn_time_seconds != 0.0f) {
+        w.WriteIntMax(rep::GRI::fpRespawnTimeSeconds, M);
+        WriteFloatProp(w, cur.respawn_time_seconds);
+        ++n;
+    }
     GRI_BOOL(bShowEnemyNeutralizedScoringMessages, show_enemy_neutralized_scoring_messages);
     GRI_BOOL(bEnableCoopHeadshotToIncap, enable_coop_headshot_to_incap);
     GRI_BOOL(bEnableMPHeadshotToIncap, enable_mp_headshot_to_incap);
@@ -625,7 +630,7 @@ uint32_t EncodePlayerStorageProxyRep(BitWriter& w, const game::ServerPlayerStora
 uint32_t EncodePawnRep(BitWriter& w, const ServerPawn& cur, const ServerPawn* prev,
                        const RepContext& ctx) {
     uint32_t n = 0;
-    const uint32_t M = kPawnMaxIndex;
+    const uint32_t M = cur.is_npc ? kNPCEnemyPawnMaxIndex : kPawnMaxIndex;
     const bool initial = prev == nullptr;
     const bool owner = ctx.for_owner;
     const bool do_move = ctx.fields != RepContext::Fields::kNoMovement;
@@ -791,7 +796,16 @@ uint32_t EncodePawnRep(BitWriter& w, const ServerPawn& cur, const ServerPawn* pr
     // connection, not just the owner. The team is what AA3's swap reads: a
     // soldier not of the viewer's team is drawn as the enemy force (doc sec
     // 38); left at the -1 default, enemies looked like US soldiers.
-    if (initial) {
+    if (initial && cur.is_npc) {
+        // Retail's NPC open: the association and AA_NPCPawn.sNPCName, no
+        // iOriginalOwningTeamIndex.
+        w.WriteIntMax(rep::Pawn::namePawnInventoryAssociation, M);
+        WriteStrProp(w, cur.inventory_association);
+        w.WriteInt(static_cast<uint32_t>(cur.inventory_association_number));
+        w.WriteIntMax(kNPCPawnName, M);
+        WriteStrProp(w, cur.npc_name);
+        n += 2;
+    } else if (initial) {
         w.WriteIntMax(rep::Pawn::namePawnInventoryAssociation, M);
         WriteStrProp(w, cur.inventory_association);
         w.WriteInt(static_cast<uint32_t>(cur.inventory_association_number));
@@ -859,6 +873,13 @@ uint32_t EncodePawnRep(BitWriter& w, const ServerPawn& cur, const ServerPawn* pr
     // Only once set (retail never sends these as None).
     if (cur.last_known_pri || (prev && prev->last_known_pri)) ref(rep::Pawn::LastKnownPRI, cur.last_known_pri);
     if (cur.active_inventory || (prev && prev->active_inventory)) ref(rep::Pawn::ActiveInventory, cur.active_inventory);
+    // An NPC's pouches go to everyone (retail frame 11183; a player's are
+    // owner-only, above).
+    if (cur.is_npc && !owner) {
+        ref(rep::Pawn::DumpPouch, cur.dump_pouch);
+        ref(rep::Pawn::NextStorageMagPouch, cur.next_mag_pouch);
+        ref(rep::Pawn::NextMagPouch, cur.next_mag_pouch);
+    }
     // RepGraphStates: each graph that differs from the last send (on the
     // open, from an all-zero graph; retail's open carries only graph 2).
     for (int g = 0; g < ServerPawn::kGraphCount; ++g) {
@@ -1091,6 +1112,7 @@ uint32_t EncodeDataFields(BitWriter& w, const std::vector<game::DataField>& fiel
     for (const auto& f : fields) if (f.v.kind == game::DataValue::Kind::kRaw) order.push_back(&f);
     for (const game::DataField* fp : order) {
         const game::DataField& f = *fp;
+        if (f.owner_only && !ctx.for_owner) continue;
         BitWriter value;
         WriteDataValue(value, f.v, ctx);
         std::string key(reinterpret_cast<const char*>(value.GetData().data()), value.GetData().size());

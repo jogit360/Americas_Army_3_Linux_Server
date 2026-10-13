@@ -50,6 +50,8 @@ constexpr uint32_t kPRIMaxIndex = rep::PRI::kMaxIndex;
 // index is written against its own MaxIndex (doc sec 26).
 constexpr uint32_t kPCMaxIndex = rep::AGP_PC::kMaxIndex;
 constexpr uint32_t kPawnMaxIndex = rep::Pawn::kMaxIndex;
+// AA_NPCEnemyPawn: AA_Pawn's fields, then AA_NPCPawn.sNPCName (131) ...
+constexpr uint32_t kNPCEnemyPawnMaxIndex = 139, kNPCPawnName = 131;
 constexpr uint32_t kSteamStatManagerMaxIndex = rep::SteamStatManager::kMaxIndex;
 constexpr uint32_t kMOSQualificationBCTMaxIndex = rep::MOSQualificationBCT::kMaxIndex;
 constexpr uint32_t kPlayerStorageProxyMaxIndex = rep::PlayerStorageProxy::kMaxIndex;

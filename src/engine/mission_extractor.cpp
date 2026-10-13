@@ -6,6 +6,7 @@
 #include <deque>
 #include <fstream>
 #include <set>
+#include <map>
 #include <sstream>
 
 #include "engine/package_props.h"
@@ -28,6 +29,11 @@ constexpr uint32_t kCdoExtractionMarker = 16373;
 constexpr uint32_t kCdoWindowManager = 3688;
 // MaxIndex (config/class_maxindex_table.tsv) of classes without a generated layout.
 constexpr uint32_t kMaxExtractionMarker = 36;
+// Carried objective (Bridge AI, retail capture 2026-10-12): AA3Baseline
+// NetIndex of each default object / class, and the classes' MaxIndex.
+constexpr uint32_t kCdoCarryableMarker = 15660;    // Default__AA_MCCarryableObjectiveMarker
+constexpr uint32_t kCdoBriefcaseUS = 26202;        // Default__AA_Objective_Briefcase_US
+constexpr uint32_t kMaxCarryableMarker = 35, kMaxBriefcase = 29, kMaxPickupFactory = 29;
 constexpr uint32_t kMaxWindowManager = 25;
 
 const char* const kFireTeamNames[] = {"Alpha", "Bravo", "Charlie", "Delta",
@@ -431,6 +437,18 @@ bool MissionExtractor::Build(MissionData& out) {
 
     // ---- objectives ----------------------------------------------------------
     const bool carryable = !g.OfClass("AA_MCCarryableObjectiveMarker").empty();
+    // Which team extracts where: retail's Kismet objective variables
+    // (AA_MCObjectiveLocationSeqVar_Object.oObjectiveData) set the marker's
+    // iRequiredTeamOverride, which AA_ExtractionVolume.HandlePawnEntry
+    // checks; iExtractingTeam is unused there (Bridge AI: Black extracts at
+    // Zulu, whose marker says iExtractingTeam 1).
+    std::map<size_t, int32_t> team_override;
+    for (size_t v : g.OfClass("AA_MCObjectiveLocationSeqVar_Object")) {
+        const int32_t marker = g.Ref(v, "ObjValue");
+        const PropValue* od = FindProp(g.Props(v), "oObjectiveData");
+        const PropValue* ov = od ? FindProp(od->members, "EXT_iRequiredTeamOverride") : nullptr;
+        if (marker >= 0 && ov && ov->i >= 0) team_override[static_cast<size_t>(marker)] = ov->i;
+    }
     std::ostringstream js, ex;
     js << "{\"source\":" << util::JsonQuote(level_name_ + " (aa3_mapbake)") << ",\"actors\":[\n";
     int64_t join_id = 1;
@@ -440,6 +458,8 @@ bool MissionExtractor::Build(MissionData& out) {
         float l[3] = {0, 0, 0};
         if (loc && loc->kind == PropValue::kVector) std::copy(loc->vec, loc->vec + 3, l);
         int32_t team = g.Int(m, "iExtractingTeam");
+        auto ovr = team_override.find(m);
+        const int32_t rule_team = ovr != team_override.end() ? ovr->second : team;
         js << "{\"retail_ch\":" << join_id++ << ",\"class\":\"AA_MCExtractionObjectiveMarker\",\"cdo\":"
            << ObjRef("AA3Baseline", kCdoExtractionMarker) << ",\"max_index\":"
            << kMaxExtractionMarker << ",\"location\":[" << Fmt(l[0]) << ","
@@ -455,15 +475,20 @@ bool MissionExtractor::Build(MissionData& out) {
         }
         const PropValue* en = FindProp(g.Props(m), "bObjectiveEnabled");
         if (en && en->b) js << "{\"idx\":28,\"name\":\"AA_ObjectiveMarker.bObjectiveEnabled\",\"kind\":\"bool\",\"v\":true},";
+        // Retail sends iRequiredTeamOverride when it isn't the default 0
+        // (Bridge AI: 1 on X-ray, nothing on Zulu).
+        if (ovr != team_override.end() && ovr->second != 0)
+            js << "{\"idx\":33,\"name\":\"AA_MCExtractionObjectiveMarker.iRequiredTeamOverride\",\"kind\":\"int\",\"v\":"
+               << ovr->second << "},";
         js << "{\"idx\":35,\"name\":\"AA_MCExtractionObjectiveMarker.iExtractingTeam\",\"kind\":\"int\",\"v\":"
            << team << "}]},\n";
 
-        // Win rule: only where entering the zone is the whole objective (not
-        // carry-the-item modes, which the server doesn't run yet).
-        if (carryable) continue;
+        // Win rule: the extracting team in the zone -- with the carried
+        // objective, its carrier ("carry").
         if (volumes.empty()) volumes = g.OfClass("AA_ExtractionVolume");
         std::string sym = g.Str(m, "PreplanSymbol");
-        ex << (first_ex ? "" : ",") << "{\"extracting_team\":" << team
+        ex << (first_ex ? "" : ",") << "{\"extracting_team\":" << rule_team
+           << ",\"carry\":" << (carryable ? "true" : "false")
            << ",\"min_players\":" << g.Int(m, "iMinimumPlayerCount")
            << ",\"min_percentage\":" << g.Int(m, "iMinPercentageToExtract")
            << ",\"objective\":" << util::JsonQuote(sym.empty() ? "EPOC_Zulu" : sym) << ",\"boxes\":[";
@@ -491,6 +516,50 @@ bool MissionExtractor::Build(MissionData& out) {
         }
         ex << "]}";
     }
+    // The carried objective (AA_MCCarryableObjectiveMarker; retail capture
+    // 2026-10-12): the marker, its placed AA_PickupFactory_Objective and the
+    // briefcase resting on it (AttachInfo: carried on the SpineB socket).
+    std::ostringstream carry;
+    for (size_t m : g.OfClass("AA_MCCarryableObjectiveMarker")) {
+        int32_t f = g.Ref(m, "MyFactory");
+        if (f < 0) f = g.Ref(m, "aLinkedObjectiveItems", 0);
+        if (f < 0) continue;
+        const size_t fi = static_cast<size_t>(f);
+        float ml[3] = {0, 0, 0}, fl[3] = {0, 0, 0};
+        if (const PropValue* l = FindProp(g.Props(m), "Location"); l && l->kind == PropValue::kVector)
+            std::copy(l->vec, l->vec + 3, ml);
+        if (const PropValue* l = FindProp(g.Props(fi), "Location"); l && l->kind == PropValue::kVector)
+            std::copy(l->vec, l->vec + 3, fl);
+        const std::string sym = g.Str(m, "PreplanSymbol");
+        static const char* kSymbols[] = {"EPOC_Zulu", "EPOC_Yankee", "EPOX_Xray", "EPOC_Whiskey"};
+        int sym_i = 0;
+        for (int k = 0; k < 4; ++k) if (sym == kSymbols[k]) sym_i = k;
+        const int32_t fnet = g.NetIndex(fi);
+        const std::string fobj = ",\"kind\":\"obj\",\"pkg\":" + util::JsonQuote(level_name_) +
+                                 ",\"net\":" + std::to_string(fnet);
+        const int64_t item_ch = join_id++;
+        auto vec = [&](const float* v) { return "[" + Fmt(v[0]) + "," + Fmt(v[1]) + "," + Fmt(v[2]) + "]"; };
+        js << "{\"retail_ch\":" << item_ch << ",\"class\":\"AA_Objective_Briefcase_US\",\"cdo\":"
+           << ObjRef("AA3Baseline", kCdoBriefcaseUS) << ",\"max_index\":" << kMaxBriefcase
+           << ",\"location\":" << vec(fl) << ",\"fields\":[{\"idx\":27,\"name\":\"AA_Inventory.AttachInfo\","
+           << "\"kind\":\"struct\",\"members\":[{\"kind\":\"int\",\"v\":-1},"
+           << "{\"kind\":\"name\",\"v\":\"SpineBSocket\",\"num\":0}]}]},\n";
+        js << "{\"retail_ch\":" << join_id++ << ",\"class\":\"AA_PickupFactory_Objective\",\"obj\":{\"pkg\":"
+           << util::JsonQuote(level_name_) << ",\"net\":" << fnet << "},\"max_index\":" << kMaxPickupFactory
+           << ",\"fields\":[{\"idx\":22,\"name\":\"Actor.Location\",\"kind\":\"vector\",\"v\":" << vec(fl) << "},"
+           << "{\"idx\":8,\"name\":\"Actor.bBlockActors\",\"kind\":\"bool\",\"v\":true},"
+           << "{\"idx\":26,\"name\":\"AA_PickupFactory.Inv\",\"kind\":\"actor\",\"retail_ch\":" << item_ch << "}]},\n";
+        js << "{\"retail_ch\":" << join_id++ << ",\"class\":\"AA_MCCarryableObjectiveMarker\",\"cdo\":"
+           << ObjRef("AA3Baseline", kCdoCarryableMarker) << ",\"max_index\":" << kMaxCarryableMarker
+           << ",\"location\":" << vec(ml) << ",\"fields\":["
+           << "{\"idx\":23,\"name\":\"AA_ObjectiveMarker.MyLocation\",\"kind\":\"vector\",\"v\":" << vec(fl) << "},"
+           << "{\"idx\":30,\"name\":\"AA_MCObjectiveMarker.PreplanSymbol\",\"kind\":\"byte\",\"bits\":2,\"v\":" << sym_i << "},"
+           << "{\"idx\":25,\"name\":\"AA_ObjectiveMarker.aLinkedObjectiveItems\",\"elem\":0" << fobj << "},"
+           << "{\"idx\":33,\"name\":\"AA_MCCarryableObjectiveMarker.MyFactory\"" << fobj << "}]},\n";
+        carry << "{\"item_class\":\"AA_Objective_Briefcase_US\",\"factory\":{\"pkg\":" << util::JsonQuote(level_name_)
+              << ",\"net\":" << fnet << "},\"location\":" << vec(fl) << "}";
+        break;                                  // one carried objective per mission
+    }
     js << "{\"retail_ch\":" << join_id++ << ",\"class\":\"AA_BreakableWindowManager\",\"cdo\":"
        << ObjRef("AA3Baseline", kCdoWindowManager) << ",\"max_index\":"
        << kMaxWindowManager << ",\"location\":[0,0,0],\"fields\":[]}\n]}\n";
@@ -502,7 +571,71 @@ bool MissionExtractor::Build(MissionData& out) {
     // ---- rules ---------------------------------------------------------------
     std::ostringstream rl;
     rl << "{\"level\":" << util::JsonQuote(level_name_) << ",\"map\":" << util::JsonQuote(map_name_)
-       << ",\"extraction\":[" << ex.str() << "],\"viewpoints\":[";
+       << ",\"extraction\":[" << ex.str() << "],";
+    if (!carry.str().empty()) rl << "\"carry\":" << carry.str() << ",";
+    // Enemy NPCs (AA_MCNPCActivationSeqAct.bEnableEnemyNPCs in the level's
+    // Kismet; AA_MCMissionManager.SpawnNPCs): their starts
+    // (AA_NPCEnemyPlayerStart: where, facing, weapon) and the firing
+    // positions they hold (AA_NPCFiringLocationPathNode), from the map's
+    // pathing level.
+    {
+        bool enemies = false;
+        for (size_t a : g.OfClass("AA_MCNPCActivationSeqAct")) {
+            const PropValue* e = FindProp(g.Props(a), "bEnableEnemyNPCs");
+            enemies = enemies || (e && e->b);
+        }
+        if (enemies) {
+            std::ostringstream st, fp;
+            bool first_s = true, first_f = true;
+            for (const Package* sh : shards_) {
+                Graph s(*sh);
+                for (size_t i : s.OfClass("AA_NPCEnemyPlayerStart")) {
+                    const PropValue* l = FindProp(s.Props(i), "Location");
+                    const PropValue* r = FindProp(s.Props(i), "Rotation");
+                    if (!l || l->kind != PropValue::kVector) continue;
+                    std::string weapon = "AA_BulletWeapon_ObranKNP";      // the class default (most retail NPCs)
+                    if (const PropValue* w = FindProp(s.Props(i), "aabwWeaponClass"); w && w->kind == PropValue::kObject)
+                        if (std::string n = sh->ResolveIndex(w->i); !n.empty() && n != "<null>")
+                            weapon = n.substr(0, n.find(' '));          // drops " (import #N)"
+                    st << (first_s ? "" : ",") << "{\"location\":[" << Fmt(l->vec[0]) << "," << Fmt(l->vec[1]) << ","
+                       << Fmt(l->vec[2]) << "],\"yaw\":" << (r && r->kind == PropValue::kRotator ? (r->rot[1] & 0xFFFF) : 0)
+                       << ",\"weapon\":" << util::JsonQuote(weapon) << "}";
+                    first_s = false;
+                }
+                for (size_t i : s.OfClass("AA_NPCFiringLocationPathNode")) {
+                    const PropValue* l = FindProp(s.Props(i), "Location");
+                    if (!l || l->kind != PropValue::kVector) continue;
+                    fp << (first_f ? "" : ",") << "[" << Fmt(l->vec[0]) << "," << Fmt(l->vec[1]) << "," << Fmt(l->vec[2]) << "]";
+                    first_f = false;
+                }
+            }
+            if (!first_s)
+                rl << "\"npc\":{\"max\":35,\"starts\":[" << st.str() << "],\"firing_positions\":[" << fp.str() << "]},";
+        }
+    }
+    // Co-op reinforcement points (AA_MCPlayerRespawnMarker; retail's
+    // SupportsRespawning is "the level has some"): team, enabled, where.
+    {
+        auto markers = g.OfClass("AA_MCPlayerRespawnMarker");
+        if (!markers.empty()) {
+            rl << "\"respawn_markers\":[";
+            bool first = true;
+            for (size_t m : markers) {
+                const PropValue* l = FindProp(g.Props(m), "Location");
+                const PropValue* r = FindProp(g.Props(m), "Rotation");
+                const PropValue* en = FindProp(g.Props(m), "bEnabled");
+                if (!l || l->kind != PropValue::kVector) continue;
+                const int32_t yaw = r && r->kind == PropValue::kRotator ? (r->rot[1] & 0xFFFF) : 0;
+                rl << (first ? "" : ",") << "{\"team\":" << g.Int(m, "iTeamIndex")
+                   << ",\"enabled\":" << (en ? (en->b ? "true" : "false") : "true")
+                   << ",\"location\":[" << Fmt(l->vec[0]) << "," << Fmt(l->vec[1]) << "," << Fmt(l->vec[2])
+                   << "],\"yaw\":" << yaw << "}";
+                first = false;
+            }
+            rl << "],";
+        }
+    }
+    rl << "\"viewpoints\":[";
     {
         bool first = true;
         for (size_t i = 0; i < map_.exports.size(); ++i) {

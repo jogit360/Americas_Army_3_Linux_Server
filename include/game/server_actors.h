@@ -95,6 +95,7 @@ struct DataField {
     int32_t elem = -1;
     DataValue v;
     uint32_t revision = 0;   // bumped to re-send an unchanged value (ServerRoundActor::Touch)
+    bool owner_only = false; // only to the connection owning the actor (bNetOwner fields)
 };
 
 struct ServerTeamInfo : ServerActor {
@@ -153,6 +154,9 @@ struct ServerGameReplicationInfo : ServerActor {
     int32_t i_max_rounds_per_match = 6;    // retail AA_GameInfo default (doc sec 36)
     int32_t i_vip_raw_team_index = -1;
     std::string s_base_map_name;
+    // Co-op reinforcements: the HUD's countdown to the next wave
+    // (AA_MCMissionManager.UpdateReinforcementPlayerInformation).
+    float respawn_time_seconds = 0.0f;
     std::string s_mission_type;
     std::string s_mission_variant;
     std::string s_tod;
@@ -287,6 +291,25 @@ struct ServerPlayerController : ServerActor {
     uint32_t owning_client_id = 0;       // SocketManager::Connection id
     ServerPlayerReplicationInfo* pri = nullptr;
     struct ServerPawn* pawn = nullptr;   // Controller.Pawn — set once the Pawn exists
+    // Carried objective notices for the protocol (Bridge AI capture
+    // 2026-10-12): picked up -> SetNotificationMessage + ReceiveLocalizedMessage;
+    // dropped (carrier killed) -> ClientSendObjectiveDroppedNotification +
+    // ClientNotifyDiscardInventory(22).
+    uint32_t objective_pickup_serial = 0;
+    uint32_t objective_drop_serial = 0;
+    uint32_t objective_incap_serial = 0;   // ClientNotifyIncapacitatedWithObjective()
+    // ClientMessage(S, Type) calls for the protocol to send (co-op
+    // reinforcement notices), oldest first.
+    std::vector<std::pair<std::string, std::string>> pending_messages;
+    // An enemy NPC neutralized by this player: ClientNotifyNeutralizedNME +
+    // ClientNotifyScoringEventDetails(7, 32, +10) (retail 13:42:54).
+    uint32_t npc_kill_serial = 0;
+    std::string last_npc_kill;
+    // Where the next spawn goes instead of the fire team's start (a co-op
+    // reinforcement point).
+    bool has_respawn_spot = false;
+    float respawn_spot[3] = {0, 0, 0};
+    int32_t respawn_spot_yaw = 0;
     struct ServerSteamStatManager* stat_manager = nullptr; // this client's Ch=3 actor
     struct ServerMOSQualificationBCT* mos_qual = nullptr;  // this client's Ch=5 actor
     // The other MOS qualifications retail opens beside BCT (LAN servers
@@ -340,6 +363,18 @@ struct ServerPlayerController : ServerActor {
 // `velocity` are inherited from ServerActor and default to the origin —
 // this server has no spawn-point data yet, so that's honest, not a bug.
 struct ServerPawn : ServerActor {
+    // An enemy NPC soldier (AA_NPCEnemyPawn; retail Bridge AI capture
+    // 2026-10-12): no controller or PRI on the wire, its name in
+    // AA_NPCPawn.sNPCName (= sBodySoldierName), iBodyTeamIndex 4.
+    // AA_Pawn.bFirstReloadFinished: set when the drawn rifle's initial
+    // reload ends; until then TakeDamage ignores every hit ("no damage during
+    // initial reload to avoid spawn campers").
+    bool first_reload_done = false;
+    bool is_npc = false;
+    std::string npc_name;
+    struct ServerPawn* npc_last_hit_by = nullptr;   // NPC: who last shot it (it turns to face them)
+    double npc_last_hit_at = -100.0;
+    uint32_t last_hit_by_client = 0;  // the player whose shot last hurt it (kill credit)
     float health = 100.0f;               // Pawn.Health
     // Spawn inventory (doc sec 30): Pawn.InvManager and AA_Pawn.DumpPouch,
     // owner-only references (retail frame 368).
@@ -492,10 +527,13 @@ struct ServerPawn : ServerActor {
     uint32_t hit_damage_class = 0;    // AA3Baseline class export (6464 bullet, 6486 fall)
     uint32_t sling_serial = 0;        // AA_Pawn.ClientSlingWeapon() (ladder mount)
     uint32_t vault_finish_serial = 0; // AA_Pawn.ClientFinishVaultMantleMoveToTarget()
+    uint32_t ladder_finish_serial = 0; // AA_Pawn.ClientFinishLadderMoveToTarget()
     bool moving_to_target = false;    // AA_Pawn.bAdvMvmt_MovingToTarget
+    bool move_to_ladder = false;      // the move's callback is FinishLadderMoveToTarget
     double vault_finish_at = -1.0;
     float vault_target[3] = {0, 0, 0};
     bool on_ladder = false;
+    bool ladder_down = false;         // mounted from the top (climbing down)
     bool holding_breath = false;
     bool asphyxiating = false;
     uint32_t breath_end_serial = 0;   // forced ends for the protocol to announce

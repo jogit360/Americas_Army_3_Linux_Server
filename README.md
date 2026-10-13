@@ -33,7 +33,7 @@ browser. `--steam` (default) also advertises to the Steam master server.
 
 ## Project Status
 
-**Playable across all 18 retail maps** with zero dependencies on client packages. Last updated 2026-10-12.
+**Playable across all 18 retail maps, plus the Bridge AI co-op mission,** with zero dependencies on client packages. Last updated 2026-10-12.
 
 | Area | Status |
 |------|--------|
@@ -43,8 +43,8 @@ browser. `--steam` (default) also advertises to the Steam master server.
 | Client RPC decoding (movement, posture, fire, reload, use...) | done (99.998% of retail bunches) |
 | LAN browser beacon (in-game server list + Join) | done |
 | Team join, role selection, deployment, spawn with per-role kits | done (13 roles per team across all maps) |
-| Movement, stance, sprint, vault/mantle, ladders, hold breath | done |
-| Map representation: Modernized Unified Map Bundles (`AA3MAP01`), shipped in the repo as `data/maps/<map>.aa3map.zst` | done (all 18 maps, 49 MB, lossless; `aa3_mapbake --verify` 18/18 byte-identical to a fresh bake from the install) |
+| Movement, stance, sprint, vault/mantle, ladders (up and down), hold breath | done (ladder-from-the-top fix bot-tested, doc sec 40.1) |
+| Map representation: Modernized Unified Map Bundles (`AA3MAP01`), shipped in the repo as `data/maps/<map>.aa3map.zst` | done (18 maps + Bridge AI, 53 MB, lossless; `aa3_mapbake --verify` 19/19 byte-identical to a fresh bake from the install) |
 | Map collision: lossless instanced mesh collision (`AA3COL03`) + BVH bullet traces | done (the packages' float vertices; quantized `AA3COL04` optional) |
 | Mission & Gameplay data: native extraction of map actors, round roles, rules | done (no capture JSON dependencies) |
 | Weapons: every role's rifle (M4A1, M16A4, M16 DMR, M249) with its fire modes, magazine size, ammo, reloads | done |
@@ -55,7 +55,10 @@ browser. `--steam` (default) also advertises to the Steam master server.
 | Breakable windows, doors, ES2 objects | done |
 | Damage by hit zone; wounds that bleed out to a HealthTarget (43% at once / 57% bled at 1.2 hp/s); incapacitation (bleed-out, withdraw); death | done (retail-matched) |
 | Round end: elimination, extraction, time limit; scoreboard; next round; 6-round match | done (bot-tested) |
-| Multi-map CLI: `--map <name>` / `-m <name>`, `--list` / `-l` | done (supports all 18 retail maps) |
+| Multi-map CLI: `--map <name>` / `-m <name>`, `--list` / `-l` | done (18 retail maps; `-m Bridge_inf_co_large_ai` for Bridge AI) |
+| Co-op "Secure and Extract": the briefcase (pickup, carry, drop on death, pickup from the ground, extraction win, reset) | done (bot-tested; Bridge AI, Airfield, Alley; doc sec 40.2) |
+| Co-op reinforcements: F5 respawn queue, 10 s waves at the mission's respawn points | done (bot-tested; doc sec 40.3) |
+| Enemy NPC soldiers (AI missions): 35 spawn with retail gear, spot players by line of sight, shoot back, take damage like players, neutralization notice | first cut (bot-tested; they hold position; doc sec 40.4) |
 | IFAK treatment: passive treatment (stop bleeding, treat the wound), Saline revive of a downed teammate | done (bot-tested); real-client treat prompt fix awaiting test |
 | Other active treatments (tourniquet, dressings...) on a conscious soldier, multiple treaters, medic scoring/voice | not started |
 | Dropped weapons, M320 rounds, TAH/VIP/other modes | not started |
@@ -123,6 +126,8 @@ LanBeacon = 1                    # in-game LAN browser
 RoleSelectionTime = 10           # seconds (retail 10)
 DeploymentTime = 10              # seconds (retail 10)
 MissionTimeLimit = 420           # round length, seconds (retail Bridge classic 420)
+EnemyNPCs = 1                    # AI missions' enemy soldiers (0 = none)
+MovementChecks = 1               # refuse impossible client moves (0 for scripted tests that teleport)
 RespawnDelay = 0                 # seconds; 0 = no respawn until the next round (retail classic)
 IncapBleeding = true             # gunshot-incapacitated soldiers bleed out
 SpawnPoint0 = "x,y,z,yaw"        # per team; defaults to retail's Black spawn
@@ -176,6 +181,13 @@ python3 tests/fake_client.py --port 8777 --round      # join, roles, spawn, a fu
 python3 tests/grenade_client.py --port 8777           # rail mods, grenades, cook-off, ES2 perks
 python3 tests/medic_client.py --port 8777             # 2 players: leg wound, treatment, head shot, Saline revive
 python3 tests/medic_scenario.py --port 8777           # 3 players: an enemy wounds, a medic treats and revives
+python3 tests/ladder_client.py --port 8777            # ladder from the top (FinishLadderMoveToTarget) vs a vault
+# on Bridge AI (MapName = "Bridge_inf_co_large_ai"):
+python3 tests/briefcase_scenario.py --port 8777       # pickup, drop on death, F5 respawn, extraction win (EnemyNPCs = 0)
+python3 tests/npc_scenario.py --port 8777             # enemy NPCs open, shoot the player, can be neutralized
+python3 tests/retail_medic.py --patient NAME --port 8777   # a medic bot for a *retail* server: treats NAME in reach
+python3 tests/mission_bot.py --port 8777 [--retail NAME]  # plays Bridge AI start to finish: briefcase, NPCs, F5
+build/aa3_navgrid data/maps/<bundle>.aa3map.zst x1 y1 z1 x2 y2 z2   # a walkable route (--serve for many)
 # decode a capture against a class's replication layout
 python3 ../aa3-tools/map_manifest/decode_rep.py --pcap cap.pcapng --frame 1 --to-frame 99999 \
     --ch 4 --class AA_GameReplicationInfo --cdo --server-port 8777
@@ -205,12 +217,16 @@ parent repo's session memory / docs.
 - All 18 maps ship and boot, but only Bridge classic has been played against
   retail captures; the other maps' mission data comes from their packages
   alone. Training levels have no teams or objectives.
-- No server-side movement physics: client locations are trusted.
+- No full server-side movement physics: moves are checked for speed and
+  for passing through walls (MovementChecks), not simulated.
 - Treatment: only passive treatment and the Saline revive are modelled.
   Other IFAK treatments, several medics on one patient, medic voice lines
-  and treatment scoring are missing; the 250-unit treatment range is a guess.
-  The client's "Treat Soldier" prompt depends on the MOS qualification set
-  and `bHasReviveKit` (doc sec 39.7); that fix is bot-tested only.
+  and treatment scoring are missing. Reach is retail's 120 units.
+- Enemy NPCs patrol, take firing positions, crouch and throw frags (doc sec
+  40.7), a simplified version of retail's thinking classes; their tuning
+  comes from bot runs against retail. A dropped NPC rifle can't be picked up.
+- Collision has the level's blocking volumes now, but a few spots still
+  differ from retail (the mission bot logs them as BLOCKED).
 - Hit zones: head, torso and legs only (no arms).
 - Side swap (round 4) only flips which team attacks; roles and spawn points
   don't swap. After round 6 the match restarts on the same map.

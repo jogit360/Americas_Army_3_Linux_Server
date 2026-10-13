@@ -28,6 +28,9 @@ struct ServerRoundActor : ServerActor {
     // Destroyed this round (an emptied ES2 perk): its channels close; the
     // level reset brings it back.
     bool gone = false;
+    // Owned by this pawn (a carried objective): owner_only fields go to its
+    // player's connection only.
+    const ServerActor* owner = nullptr;
 
     // Insert or replace the field at (idx, elem).
     void Set(uint32_t idx, int32_t elem, const DataValue& v);

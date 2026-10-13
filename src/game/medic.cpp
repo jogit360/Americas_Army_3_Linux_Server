@@ -26,7 +26,7 @@ namespace game {
 namespace {
 constexpr float kBleedPerSecond = 1.2f;       // retail: 84.88 -> 79.08 in 4.84 s
 constexpr float kTreatPerSecond = 0.5f;       // 1/60 per 33 ms
-constexpr float kTreatRange = 250.0f;         // medic to patient (guess; GetVisiblePawnFromSoldierName)
+constexpr float kTreatRange = 120.0f;         // medic to patient (AA_PlayerController.GetVisiblePawnFromSoldierName)
 constexpr uint32_t kBleedingDamage = 6419;    // AA3Baseline AA_DamageType_Bleeding
 
 float Dist(const ServerPawn& a, const ServerPawn& b) {

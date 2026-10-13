@@ -59,10 +59,15 @@ public:
     // config/class_role_templates.json text.
     bool LoadRoleTemplates(const std::string& json, std::string* err);
 
+    // The map's other streamed levels (Bridge_pathing: enemy NPC starts and
+    // firing positions); optional.
+    void AddShard(const Package* shard) { shards_.push_back(shard); }
+
     // False when the level has no team builders (training levels).
     bool Build(MissionData& out);
 
 private:
+    std::vector<const Package*> shards_;
     const Package& level_;
     std::string level_name_;
     const Package& map_;

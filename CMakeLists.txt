@@ -43,6 +43,10 @@ set(SERVER_SOURCES
     src/game/world.cpp
     src/game/weapons.cpp
     src/game/medic.cpp
+    src/game/objective.cpp
+    src/game/reinforcements.cpp
+    src/game/npc.cpp
+    src/game/navgrid.cpp
     src/game/collision.cpp
     src/util/bits.cpp
     src/util/crc.cpp
@@ -160,6 +164,22 @@ target_link_libraries(aa3_mapbake PRIVATE
 )
 install(TARGETS aa3_mapbake DESTINATION bin)
 
+# Walkable routes over a bundle's collision (bots; the server's NPCs use
+# game/navgrid.cpp too).
+add_executable(aa3_navgrid
+    tools/navgrid/main.cpp
+    src/game/navgrid.cpp
+    src/game/collision.cpp
+    src/engine/map_bundle.cpp
+    src/engine/map_manifest.cpp
+    src/engine/package_reader.cpp
+    src/util/crc.cpp
+    src/util/json.cpp
+    src/util/logging.cpp
+)
+target_include_directories(aa3_navgrid PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(aa3_navgrid PRIVATE ${LZO2_LIBRARY} ${ZSTD_LIBRARY} OpenSSL::Crypto z pthread dl)
+
 # Encoder round-trip check against the tool's --rep-layout output (see the
 # file header for how to produce the two layout files it takes).
 add_executable(rep_roundtrip_test
@@ -242,6 +262,9 @@ add_executable(mission_extraction_test
     src/game/world.cpp
     src/game/weapons.cpp
     src/game/medic.cpp
+    src/game/objective.cpp
+    src/game/reinforcements.cpp
+    src/game/npc.cpp
     src/game/collision.cpp
     src/game/player_manager.cpp
     src/game/stats_export.cpp

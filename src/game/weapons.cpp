@@ -99,6 +99,10 @@ const GrenadeSpec kGrenades[] = {
      &ServerPlayerReplicationInfo::m106_grenades,       3, 1.0f, 17.0f, Blast::kSmoke},
     {"AA_ThrowWeapon_AN_M14_TH3", 32708, "AA_ThrowProjectile_AN_M14_TH3", 1,
      &ServerPlayerReplicationInfo::incendiary_grenades, 4, 5.0f, 60.0f, Blast::kIncendiary},
+    // The enemy NPCs' frag (AA_NPCEnemySoldierController: U23A1; retail
+    // Bridge AI capture, AA_ThrowProjectile_U23A1). Thrown by NpcThrowFrag only.
+    {"AA_ThrowWeapon_U23A1",      32883, "AA_ThrowProjectile_U23A1",      5,
+     &ServerPlayerReplicationInfo::frag_grenades,       0, 4.0f,  6.0f, Blast::kFrag},
 };
 const GrenadeSpec* GrenadeSpecOf(const std::string& cls) {
     for (const auto& g : kGrenades) if (cls == g.weapon) return &g;
@@ -532,6 +536,49 @@ void World::ThrowGrenade(ServerPawn& pawn, ServerRoundActor& grenade, bool in_ha
     ++pawn.switch_best_serial;
     LOG_INFO("%s threw %s (fuse %.2fs)%s", pawn.pri ? pawn.pri->player_name.c_str() : "?",
              spec->projectile, fuse, in_hand ? " -- cooked off in hand" : "");
+}
+
+// An NPC lobs a frag at `target`: the launch angle that carries the throw
+// speed's arc to the target's distance under the world's gravity (45 degrees
+// when it can't reach), from 31 units above the pawn.
+void World::NpcThrowFrag(ServerPawn& npc, const Vec3& target) {
+    const GrenadeSpec* spec = GrenadeSpecOf("AA_ThrowWeapon_U23A1");
+    if (!spec) return;
+    const Vec3 start{npc.location[0], npc.location[1], npc.location[2] + 31.0f};
+    const float dx = target.x - start.x, dy = target.y - start.y;
+    const float d = std::sqrt(dx * dx + dy * dy);
+    if (d < 1.0f) return;
+    const float g = std::fabs(world_info_ ? world_info_->world_gravity_z : -520.0f);
+    const float s = std::min(1.0f, g * d / (kThrowSpeed * kThrowSpeed));
+    const float ang = 0.5f * std::asin(s);
+    const Vec3 vel{dx / d * kThrowSpeed * std::cos(ang), dy / d * kThrowSpeed * std::cos(ang), kThrowSpeed * std::sin(ang)};
+    auto proj = std::make_unique<ServerRoundActor>();
+    proj->class_name = spec->projectile;
+    proj->cdo_package = "AA3Baseline";
+    proj->cdo_net_index = spec->projectile_cls + 1;
+    proj->object_index = ObjectIndex("AA3Baseline", proj->cdo_net_index);
+    proj->max_index = kProjMaxIndex;
+    proj->transient = true;
+    proj->label = std::string(spec->projectile) + ":" + npc.npc_name;
+    proj->location[0] = start.x; proj->location[1] = start.y; proj->location[2] = start.z;
+    DataValue rot; rot.kind = DataValue::Kind::kRotator;
+    rot.v3[0] = static_cast<int32_t>(ang * 32768.0f / 3.14159265f) & 0xFFFF;
+    rot.v3[1] = static_cast<int32_t>(std::atan2(dy, dx) * 32768.0f / 3.14159265f) & 0xFFFF;
+    proj->Set(kProjRotation, -1, rot);
+    proj->Set(kProjVelocity, -1, VectorValue(vel.x, vel.y, vel.z));
+    proj->Set(kInstigator, -1, DataValue::Actor(&npc));
+    ThrownGrenade t;
+    t.actor = std::move(proj);
+    t.instigator = &npc;
+    t.spec = static_cast<int>(spec - kGrenades);
+    t.thrown_at = clock_;
+    t.explode_at = clock_ + spec->fuse;
+    t.gone_at = clock_ + spec->life;
+    t.drop_at = t.gone_at + 10.0;
+    t.pos = start;
+    t.vel = vel;
+    thrown_.push_back(std::move(t));
+    LOG_INFO("%s threw a frag at (%.0f, %.0f, %.0f)", npc.npc_name.c_str(), target.x, target.y, target.z);
 }
 
 void World::UpdateGrenades(double dt) {

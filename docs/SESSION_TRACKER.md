@@ -421,3 +421,28 @@ LOG_SET_LEVEL(LOG_LEVEL_DEBUG);  // In main.cpp
 
 **Last Updated**: 2026-10-12  
 **Current Status**: Maps complete; weapons, grenades and IFAK treatment/revive implemented and bot-tested.
+
+## Recent Session: Bridge AI, Briefcase, Reinforcements, Enemy NPCs (2026-10-12)
+
+- Retail capture of Bridge AI (`Bridge_inf_co_large_ai`) with the real client and two bots
+  (`captures/bridge_ai_2026-10-12/`, doc sec 40). A medic bot (`tests/retail_medic.py`)
+  treated the real client on the retail server.
+- Ladder from the top: `ServerStartMoveToTarget`'s callback `FinishLadderMoveToTarget` now
+  gets `ClientFinishLadderMoveToTarget` and the climbing-down states (sec 40.1).
+- Bridge AI bundle (`-m Bridge_inf_co_large_ai`); `aa3_mapbake --verify` 19/19.
+- Briefcase (`src/game/objective.cpp`), reinforcements (`src/game/reinforcements.cpp`),
+  enemy NPCs with retail gear (`src/game/npc.cpp`), `EnemyNPCs` INI switch.
+- Channels: reopened channels continue their reliable sequence; closed ones are reused.
+- Treatment reach set to retail's 120 units (it was a 250 guess).
+- Tests: `ladder_client.py`, `briefcase_scenario.py`, `npc_scenario.py` PASS; the earlier
+  round, grenade and medic tests PASS; ctest 5/5.
+- Next: real-client test on our server; NPC movement/patrol/cover; NPC relevancy.
+- Mission bot (`tests/mission_bot.py`) completes Bridge AI on retail (server log "Extraction
+  Entered") and on ours ("Round 2 over (extraction): team 0 wins"). `aa3_navgrid`
+  (`game/navgrid.cpp`) for routes. Fixed: prefab-template phantom collision, blocking volumes,
+  spawn protection, round end on team death in co-op, tactical stance after sighting (ACOG
+  blur), NPC floor height / perception / aim. Doc sec 40.6.
+- NPC AI (patrol, firing positions, crouch, U23A1 frags) on a background `NavGrid`; NPC
+  relevancy; dropped NPC rifles; downed-carrier hand-off; GRI reinforcement countdown;
+  movement checks (INI MovementChecks). Mission bot: round-1 extraction on our server.
+  Doc sec 40.7.

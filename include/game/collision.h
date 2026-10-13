@@ -9,6 +9,7 @@
 //     instances + TLAS, plus direct terrain and BSP geometry. Reduces memory
 //     from ~100MB to ~15MB and cuts load time dramatically.
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -25,7 +26,8 @@ struct TraceHit {
     float time = 1.0f;          // fraction of the segment, 0..1
     Vec3 location;
     Vec3 normal;                // unit, facing the trace start
-    uint32_t triangle = 0;
+    uint32_t triangle = 0;      // direct triangle, or 0x80000000 | mesh instance index
+
     uint32_t owner = 0;         // map NetIndex + 1 of a dynamic actor (window/door), 0 = static
 };
 
@@ -43,6 +45,23 @@ public:
     // Closest hit on the segment start->end against triangles whose flags
     // include any bit of `mask` (both faces count).
     TraceHit LineTrace(const Vec3& start, const Vec3& end, uint8_t mask = kBlockTrace) const;
+
+    // World bounds of a dynamic actor's triangles (owner = NetIndex + 1).
+    bool OwnerBounds(uint32_t owner, Vec3& lo, Vec3& hi) const {
+        bool any = false;
+        for (const auto& in : instances_)
+            if (in.owner == owner) {
+                if (!any) { lo = in.world_min; hi = in.world_max; any = true; continue; }
+                lo = {std::min(lo.x, in.world_min.x), std::min(lo.y, in.world_min.y), std::min(lo.z, in.world_min.z)};
+                hi = {std::max(hi.x, in.world_max.x), std::max(hi.y, in.world_max.y), std::max(hi.z, in.world_max.z)};
+            }
+        return any;
+    }
+    // A mesh instance's world bounds (debugging: which object a hit is).
+    bool InstanceBounds(uint32_t i, Vec3& lo, Vec3& hi) const {
+        if (i >= instances_.size()) return false;
+        lo = instances_[i].world_min; hi = instances_[i].world_max; return true;
+    }
 
     // Stop/restart tracing against a dynamic actor's triangles (a broken window).
     void SetOwnerEnabled(uint32_t owner, bool enabled);

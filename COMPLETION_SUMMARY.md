@@ -141,6 +141,60 @@ treating and reviving a scripted bot.
 - **Treat prompt** (doc sec 39.7): the client only offers "Treat Soldier" when it holds the player's MOS
   qualifications (Combat Medic among them) and `PRI.bHasReviveKit`; both are now sent as retail does.
 
+### Co-op AI Missions: Bridge AI (2026-10-12; doc sec 40)
+From a retail capture of `Bridge_inf_co_large_ai` with the real client:
+- **Ladder fix:** going down a ladder starts with `ServerStartMoveToTarget`
+  whose callback is `FinishLadderMoveToTarget`. The server now answers
+  `ClientFinishLadderMoveToTarget` with the climbing-down states, instead of
+  a vault.
+- **Bridge AI as a map:** `-m Bridge_inf_co_large_ai` loads a bundle named
+  after the mission (map Bridge_night_clear).
+- **Briefcase** (`src/game/objective.cpp`): pickup by `ServerRepExec('Pickup')`,
+  carried and re-sent owned, dropped as `AA_DroppedObjective` when the
+  carrier dies, picked up from the ground, extraction by the carrier wins.
+  Team-to-zone mapping comes from the level's Kismet overrides. Airfield's
+  and Alley's co missions use it too.
+- **Reinforcements** (`src/game/reinforcements.cpp`): F5 queues the player,
+  and 10 s waves deploy them at the level's `AA_MCPlayerRespawnMarker`s, with
+  retail's messages.
+- **Enemy NPCs** (`src/game/npc.cpp`): 35 `AA_NPCEnemyPawn`s with retail's
+  gear (Obran rifle, magazine, pouch, slots), spotting by line of sight,
+  burst fire, damage like players, neutralization notice and +10.
+- **Channels:** reopened channels continue their reliable sequence (UE3
+  keeps it per index), and closed channels are reused.
+- **Tests:** `ladder_client.py`, `briefcase_scenario.py`, `npc_scenario.py`,
+  and `retail_medic.py`, a medic bot for retail servers that treated the
+  real client on retail.
+
+### Mission Bot, Navigation and Collision Fixes (2026-10-12; doc sec 40.6)
+`tests/mission_bot.py` plays Bridge AI start to finish on retail and on ours
+(retail log: "Extraction Entered"; ours: "Round 2 over (extraction): team 0
+wins"). `aa3_navgrid` / `game/navgrid.cpp`: walkable routes from a bundle's
+collision (floors, stairs, crouch passages, doors, body clearance). The runs
+found and fixed:
+- phantom prefab-template collision at the map origin (16 bundles);
+- missing blocking volumes;
+- spawn protection until the first reload;
+- the rule that a team down ends the round, even in co-op;
+- the tactical stance after sighting (the ACOG blur);
+- enemies spawning at their marker's height;
+- enemy perception and aim, tuned against retail.
+
+### NPC AI and Server Gaps Closed (2026-10-12; doc sec 40.7)
+- **NPCs move** on a server-side walkable grid built in the background:
+  patrols, running to a firing position that sees their target, crouching,
+  and rare U23A1 frags.
+- **NPC relevancy:** opened within 5000 units, closed past 6000.
+- **Dropped rifles:** killed NPCs drop retail's `AA_DroppedPickup_Obran*`,
+  which last 120 s.
+- **Hand-off:** a downed carrier drops the case for a teammate
+  (`ServerDropObjective`, retail's notice).
+- **Countdown:** the GRI reinforcement countdown.
+- **Movement checks:** refuse teleports and moves through walls.
+
+The mission bot completes Bridge AI on our server in round 1 (about 6
+minutes, 9 kills, 4 deaths).
+
 ### Test Bots for Retail Servers
 `tests/bot_client.py --retail NAME` logs into a real retail AA3 server like the game client does (full
 login, level-streaming replies, role/ready each round, rifle drawn, `--wander` against the idle kill). It
@@ -221,7 +275,8 @@ Scripted end-to-end clients (run against a live server, each prints PASS/FAIL; a
 
 | Area | What's left |
 |---|---|
-| IFAK | Real-client confirmation of the treat prompt; symptom-based active treatments on conscious soldiers (tourniquet, dressings, etc.); several medics on one patient; the medic call ("m") and withdraw (backspace) RPCs; treatment scoring and XP; medic voice and the "Stop..." commo reply; retail's 33 ms progress cadence; the real treatment range (250 units is a guess) |
+| IFAK | Real-client confirmation of the treat prompt; symptom-based active treatments on conscious soldiers (tourniquet, dressings, etc.); several medics on one patient; the medic call ("m") and withdraw (backspace) RPCs; treatment scoring and XP; medic voice and the "Stop..." commo reply; retail's 33 ms progress cadence |
+| Co-op AI (Bridge AI) | Real-client test of the ladder fix, briefcase, hand-off, F5 respawn and countdown, enemies (movement, grenades, dropped rifles) and the ACOG stance fix; picking up a dropped NPC rifle; full movement physics (moves are only checked) |
 | Damage | Arm and upper-torso hit zones (only head, torso and legs today) |
 | Weapons | Dropped weapons and pickups (`AA_DroppedPickup_*`); M320 40 mm rounds; remote players' weapon visibility |
 | Rounds | Team-1 spawn points and the full side swap (roles/spawns); map rotation after the match |

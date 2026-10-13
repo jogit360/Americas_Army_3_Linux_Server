@@ -107,6 +107,10 @@ enum class PcRpc : uint8_t {
     kServerGiveActiveTreatment,
     kServerWeaponRaise,
     kSendCommoRequest,
+    // Carried objective and co-op reinforcements (Bridge AI capture 2026-10-12).
+    kServerRepExec,
+    kServerRequestRespawn,
+    kServerDropObjective,
 };
 
 struct DecodedRpc {

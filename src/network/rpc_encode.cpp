@@ -75,6 +75,13 @@ void BuildClientMessageRPC(util::BitWriter& w, const std::string& message) {
     w.WriteBit(false);  // MsgLifeTime: Send=0
 }
 
+void BuildClientMessageRPC(util::BitWriter& w, const std::string& message, const std::string& type) {
+    w.WriteIntMax(rep::PC::ClientMessage, kPCMaxIndex);
+    WriteRPCStrParam(w, message);       // S
+    WriteRPCNameParam(w, type);         // Type
+    w.WriteBit(false);                  // MsgLifeTime: Send=0
+}
+
 void BuildClientSetRotationRPC(util::BitWriter& w, int32_t pitch, int32_t yaw,
                                int32_t roll, bool reset_camera) {
     constexpr uint32_t kClientSetRotationRepIndex = rep::PC::ClientSetRotation;

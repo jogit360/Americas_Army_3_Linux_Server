@@ -11,6 +11,9 @@
 #include "game/server_actors.h"
 #include "game/collision.h"
 #include "game/round_actors.h"
+#include "game/navgrid.h"
+#include <atomic>
+#include <thread>
 
 namespace aa3 {
 namespace engine { struct MapManifest; class MapBundle; }
@@ -131,7 +134,7 @@ public:
     bool BeginHoldBreath(ServerPawn* pawn);
     // AA_Pawn.ServerStartMoveToTarget (vault/mantle: the client picks the
     // target), ServerClimbLadder / ServerEndClimbLadder (doc sec 33).
-    void StartMoveToTarget(ServerPawn* pawn, const float target[3]);
+    void StartMoveToTarget(ServerPawn* pawn, const float target[3], bool ladder = false);
     void ClimbLadder(ServerPawn* pawn, bool on);
     // Withdraw (MEDEVAC) while incapacitated: dies as usual (doc sec 35).
     bool Withdraw(ServerPawn* pawn);
@@ -190,6 +193,42 @@ public:
         double next_burn = 0.0;
     };
     const std::vector<ThrownGrenade>& ThrownGrenades() const { return thrown_; }
+
+    // Carried objective (the briefcase of a co mission; Bridge AI capture
+    // 2026-10-12): the briefcase and dropped-briefcase actors, opened to
+    // every player and closed when `gone` (a pickup closes the briefcase
+    // and opens a fresh, owned one, as retail).
+    const std::vector<std::unique_ptr<ServerRoundActor>>& ObjectiveActors() const { return objective_actors_; }
+    // AA_PlayerController.ServerRepExec('Pickup', ContextActor): the
+    // context is the factory (a static object index) or a dropped
+    // briefcase (one of the player's channels).
+    bool PickUpObjective(ServerPlayerController& pc, uint32_t static_obj, const ServerActor* actor);
+    const ServerPawn* ObjectiveCarrier() const { return carry_.carrier; }
+    // AA_PlayerController.ServerDropObjective: the carrier (downed, as the
+    // HUD offers it) puts the case down 50 units in front for a teammate.
+    bool DropObjectiveByChoice(ServerPlayerController& pc);
+
+    // Co-op reinforcements (AA_PlayerController.ServerRequestRespawn, the
+    // F5 key; AA_MCMissionManager.JoinPlayMidRound /
+    // PlayerReinforcementSpawnMonitor): a dead or spectating player joins
+    // their team's queue; every 10 s each team's queue deploys, up to 4
+    // players, at the mission's AA_MCPlayerRespawnMarkers.
+    void RequestRespawn(ServerPlayerController& pc);
+
+    // Enemy NPC soldiers (AA_NPCEnemyPawn; npc.cpp), opened to every player.
+    std::vector<const ServerPawn*> NpcPawns() const;
+    // Loose things on the ground everyone sees (a killed NPC's rifle,
+    // AA_DroppedPickup_*): opened to every player, closed when `gone`.
+    const std::vector<std::unique_ptr<ServerRoundActor>>& WorldItems() const { return world_items_; }
+    void SetEnemyNPCs(bool on) { npcs_enabled_ = on; }   // INI EnemyNPCs (default on)
+    // INI MovementChecks (default on): refuse impossible client moves.
+    // Scripted protocol tests that place their soldiers turn it off.
+    void SetMovementChecks(bool on) { movement_checks_ = on; }
+    bool MovementChecks() const { return movement_checks_; }
+    bool SupportsRespawning() const { return !respawn_markers_.empty(); }
+    // AA3Baseline class AA_Objective_Briefcase_US's wire index (the pickup
+    // message names it), 0 if none.
+    uint32_t ObjectiveItemClassIndex() const;
 
     // A pawn's inventory actors (doc sec 30), or null.
     const std::vector<std::unique_ptr<ServerRoundActor>>* PawnInventory(const ServerPawn* p) const {
@@ -273,6 +312,84 @@ private:
     void ApplyDamage(ServerPawn& victim, ServerPawn* instigator, float damage, uint32_t damage_class,
                      const Vec3& at, const Vec3& dir);
     std::vector<ThrownGrenade> thrown_;
+    struct CarriedObjective {
+        bool active = false;
+        std::string factory_pkg;
+        uint32_t factory_net = 0;
+        float home[3] = {0, 0, 0};
+        ServerRoundActor* factory = nullptr;     // placed AA_PickupFactory_Objective (join actor)
+        ServerRoundActor* marker = nullptr;      // AA_MCCarryableObjectiveMarker (join actor)
+        ServerRoundActor* item = nullptr;        // the briefcase now (in objective_actors_)
+        ServerRoundActor* dropped = nullptr;     // AA_DroppedObjective lying on the ground
+        ServerPawn* carrier = nullptr;
+        ServerRoundActor proto;                  // the briefcase at rest, from the join actors
+        double settle_at = -1.0;                 // dropped case lands (Physics None)
+    } carry_;
+    std::vector<std::unique_ptr<ServerRoundActor>> objective_actors_;
+    struct RespawnMarker {
+        int32_t team = 0;
+        bool enabled = true;
+        float loc[3] = {0, 0, 0};
+        int32_t yaw = 0;
+        double last_used = -100.0;
+    };
+    std::vector<RespawnMarker> respawn_markers_;
+    struct NpcStart { float loc[3] = {0, 0, 0}; int32_t yaw = 0; std::string weapon; };
+    std::map<const ServerPawn*, std::string> npc_weapon_;       // each NPC's rifle class
+    std::vector<NpcStart> npc_starts_;
+    std::vector<std::array<float, 3>> npc_firing_positions_;
+    int32_t npc_max_ = 0;
+    bool npcs_enabled_ = true;
+    bool movement_checks_ = true;
+    struct NpcBrain {
+        ServerPawn* target = nullptr;
+        double spotted_at = 0.0, next_shot_at = 0.0, next_look_at = 0.0;
+        int burst_left = 3;
+        Vec3 home;                              // its start
+        std::vector<Vec3> path;                 // floor points to walk
+        size_t path_i = 0;
+        float speed = 170.0f;                   // walking; running to cover 300
+        double next_patrol_at = 0.0;
+        double last_seen_at = -100.0;
+        Vec3 last_seen;
+        double next_grenade_at = 0.0;
+        double crouch_until = 0.0;
+    };
+    // The walkable grid for NPC routes, built in the background at load
+    // (a copy of the collision; ~10-20 s); NPCs hold position until ready.
+    std::unique_ptr<NavGrid> navgrid_;
+    std::atomic<bool> nav_ready_{false};
+    std::thread nav_thread_;
+    void StartNavBuild();
+    bool NpcRoute(ServerPawn& npc, NpcBrain& b, const Vec3& to, float speed);
+    void NpcMove(ServerPawn& npc, NpcBrain& b, double dt);
+    std::map<const ServerPawn*, NpcBrain> npc_brains_;
+    double next_npc_grenade_at_ = 0.0;          // one NPC frag at a time map-wide
+    std::vector<std::unique_ptr<ServerRoundActor>> world_items_;
+    struct ItemTimer { ServerRoundActor* item; double settle_at, expire_at; };
+    std::vector<ItemTimer> item_timers_;
+    void DropNpcWeapon(const ServerPawn& npc);
+    void NpcThrowFrag(ServerPawn& npc, const Vec3& target);
+    void UpdateWorldItems();
+    void SpawnNPCs();
+    void GiveNpcGear(ServerPawn& npc, const std::string& weapon);
+    void UpdateNPCs(double dt);
+    bool NpcCanSee(const ServerPawn& npc, const ServerPawn& target) const;
+    void NpcShoot(ServerPawn& npc, const ServerPawn& target);
+    ServerPawn* TracePawns(const Vec3& start, const Vec3& seg, const ServerPawn* ignore, bool skip_npcs,
+                           float* best_t);
+    static std::string SoldierName(const ServerPawn* p) {
+        if (!p) return "Unknown";
+        if (p->is_npc) return p->npc_name;
+        return p->pri ? p->pri->player_name : "Unknown";
+    }
+    std::array<std::vector<uint32_t>, 2> respawn_queue_;   // owning client ids, in order
+    double next_wave_at_ = -1.0;
+    void UpdateReinforcements();
+    void SetupCarriedObjective();
+    void ResetCarriedObjective();
+    void DropObjective(ServerPawn& carrier, float ahead = 0.0f);
+    void UpdateObjective();
     std::map<const ServerPawn*, std::vector<std::unique_ptr<ServerRoundActor>>> pawn_inventory_;
     std::vector<std::unique_ptr<ServerRoundActor>> round_actors_;
     std::vector<std::unique_ptr<ServerRoundActor>> map_actors_;
@@ -342,6 +459,7 @@ private:
     bool LoadMissionRulesFromJson(const std::string& json);
     struct ExtractionRule {
         int32_t team = 0;
+        bool carry = false;                         // the carried objective's carrier must be inside
         int32_t min_players = 1;
         std::string objective;
         std::vector<std::array<float, 6>> boxes;   // min xyz, max xyz

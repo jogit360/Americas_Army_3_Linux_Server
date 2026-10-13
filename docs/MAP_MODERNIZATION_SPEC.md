@@ -348,8 +348,9 @@ Phase 4 eliminates all packet capture and loose JSON dependencies by implementin
 
 ## 10. Shipped Maps: the Bundles Are Part of the Server (2026-10-12)
 
-All 18 retail maps ship in the repository as `data/maps/<map>.aa3map.zst`: 49 MB in git,
-244 MB uncompressed. Neither the server, nor `ctest`, nor the scripted clients need an AA3
+All 18 retail maps ship in the repository as `data/maps/<map>.aa3map.zst`, plus one second
+mission on a map (`Bridge_inf_co_large_ai`, Bridge AI on Bridge_night_clear: a bundle named after
+its mission, started with `-m Bridge_inf_co_large_ai`). That's 53 MB in git, 262 MB uncompressed. Neither the server, nor `ctest`, nor the scripted clients need an AA3
 install. Players still need the game itself: the client loads its own copy of each map,
 and checks the server's package list against it.
 
@@ -359,12 +360,14 @@ exactly as the packages have it:
 - **Collision**: lossless `AA3COL03`, the packages' float vertices. Quantized `AA3COL04` is now
   opt-in (`--quantized`), because its ~1 cm vertex error isn't 1:1.
 - **Placed actors**: NetIndex and MaxIndex for each.
-- **Mission**: roles, join and match actors, and the rules.
+- **Mission**: roles, join and match actors, and the rules. For co missions the rules also
+  carry the briefcase (`carry`) and the reinforcement points (`respawn_markers`); for AI
+  missions they carry the enemy starts and firing positions (`npc`), from the pathing level.
 - **Also**: windows, spawns and the spawn kit.
 
 The bake is deterministic: two bakes of the same install are byte-identical. `aa3_mapbake --verify`
 re-bakes every map from an install and compares each shipped bundle with it, section by
-section, byte for byte. Result on 2026-10-12: **18 of 18 identical**. The check is shown to catch
+section, byte for byte. Result on 2026-10-12: **19 of 19 identical**. The check is shown to catch
 differences: run against the older quantized bundles, it flags every map's Collision section.
 
 **Format.** Each file is the `AA3MAP01` container, compressed whole with zstd (level 19,
@@ -376,6 +379,7 @@ differences: run against the older quantized bundles, it flags every map's Colli
 | Airfield_day_cloudy | 16.6 | 4.0 |
 | Alley_day_cloudy / foggy | 11.4 | 3.3 |
 | Bridge_day_fog / night_clear | 18.9 | 4.7 |
+| Bridge_inf_co_large_ai (Bridge AI) | 18.8 | 4.7 |
 | Classroom_CLS | 0.8 | 0.2 |
 | ConexMOUT | 7.4 | 1.8 |
 | Impact_day_cloudy | 6.5 | 2.1 |
@@ -388,7 +392,7 @@ differences: run against the older quantized bundles, it flags every map's Colli
 | short-range | 25.1 | 3.4 |
 | Stronghold_night_clear | 15.3 | 4.2 |
 | VRS | 1.7 | 0.6 |
-| **Total (18)** | **244** | **49** |
+| **Total (19)** | **262** | **53** |
 
 **Tests.** `map_bundle_validation_test` and `mission_extraction_test` read the shipped bundles.
 `collision_parity_test` checks the lossless collision against the legacy flat collision:
@@ -406,4 +410,4 @@ without one.
 | **Phase 3** | **Quantized Mesh Compression (`AA3COL04`)** | **COMPLETE** | 16-bit vertex quantization, packed uint16 indices, 75% mesh geometry reduction, 0 ray mismatches. |
 | **Phase 4** | **Native Mission & Sublevel Ingestion** | **COMPLETE** | Full Level.Actors + RoundActors extraction (13 roles/team), Join/Match ES2 actors, mission rules for all 18 maps. |
 | **Retail Maps** | **Complete Retail Batch Bake** | **COMPLETE** | All 18 base retail maps baked from the cooked packages. Server `--map` CLI tested and verified. |
-| **Shipped Maps** | **Bundles in the repository, 1:1** | **COMPLETE** | `data/maps/*.aa3map.zst`: 49 MB, lossless, `aa3_mapbake --verify` 18/18 identical to an install (sec 10). |
+| **Shipped Maps** | **Bundles in the repository, 1:1** | **COMPLETE** | `data/maps/*.aa3map.zst`: 18 maps + Bridge AI, 53 MB, lossless, `aa3_mapbake --verify` 19/19 identical to an install (sec 10). |

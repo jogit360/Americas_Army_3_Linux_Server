@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <sstream>
 #include <vector>
@@ -481,77 +482,121 @@ bool PackageExtractor::ExtractCollision(std::vector<uint8_t>& out_col_bytes,
     // level, geometry shards): their actors are static here (owner 0), so
     // their NetIndex numbering never meets the map's window owners.
     auto collect = [&](const Package& src, bool primary) {
+        // Triangles of a UModel (BSP nodes, fan-triangulated), each vertex
+        // through `xform` (level geometry: world space already; a volume's
+        // brush: its local space).
+        auto emit_model = [&](size_t i, const std::function<void(float*)>& xform, uint8_t flags) {
+                size_t after_p = 0;
+                ReadExportProps(src, i, &after_p);
+                const uint8_t* data = src.body.data();
+                size_t total_size = src.body.size();
+                size_t p = after_p + 28; // Bounds
+
+                int32_t vec_size = ReadI32(data, total_size, p);
+                int32_t vec_count = ReadI32(data, total_size, p);
+                p += static_cast<size_t>(vec_size * vec_count);
+
+                int32_t pt_size = ReadI32(data, total_size, p);
+                int32_t pt_count = ReadI32(data, total_size, p);
+                const float* pts = reinterpret_cast<const float*>(data + p);
+                p += static_cast<size_t>(pt_size * pt_count);
+
+                int32_t node_size = ReadI32(data, total_size, p);
+                int32_t node_count = ReadI32(data, total_size, p);
+                const uint8_t* nodes = data + p;
+                p += static_cast<size_t>(node_size * node_count);
+
+                ReadI32(data, total_size, p); // TTransArray owner
+                int32_t nsurf = ReadI32(data, total_size, p);
+                std::vector<uint32_t> surf_flags(nsurf);
+                for (int s = 0; s < nsurf; ++s) {
+                    std::memcpy(&surf_flags[s], data + p + s * 56 + 4, 4);
+                }
+                p += static_cast<size_t>(nsurf) * 56;
+
+                int32_t v_size = ReadI32(data, total_size, p);
+                int32_t v_count = ReadI32(data, total_size, p);
+                (void)v_count;
+                const uint8_t* vraw = data + p;
+
+                if (pt_size != 12 || node_size != 64) return;
+
+                for (int k = 0; k < node_count; ++k) {
+                    size_t noff = static_cast<size_t>(k) * 64;
+                    int32_t ivp = 0, isurf = 0;
+                    std::memcpy(&ivp, nodes + noff + 16, 4);
+                    std::memcpy(&isurf, nodes + noff + 20, 4);
+                    uint8_t nverts = nodes[noff + 54];
+                    if (nverts < 3) continue;
+                    uint32_t sflag = (isurf >= 0 && isurf < nsurf) ? surf_flags[isurf] : 0;
+                    if (sflag & 0x8) continue; // PF_NotSolid
+
+                    std::vector<std::array<float, 3>> poly(nverts);
+                    for (int j = 0; j < nverts; ++j) {
+                        int32_t pv = 0;
+                        std::memcpy(&pv, vraw + (ivp + j) * v_size, 4);
+                        if (pv >= 0 && pv < pt_count) {
+                            poly[j] = {pts[pv * 3 + 0], pts[pv * 3 + 1], pts[pv * 3 + 2]};
+                            xform(poly[j].data());
+                        }
+                    }
+                    // Fan triangulate
+                    for (int m = 1; m < nverts - 1; ++m) {
+                        RawTri rt{};
+                        rt.v0[0] = poly[0][0]; rt.v0[1] = poly[0][1]; rt.v0[2] = poly[0][2];
+                        rt.e1[0] = poly[m][0] - poly[0][0]; rt.e1[1] = poly[m][1] - poly[0][1]; rt.e1[2] = poly[m][2] - poly[0][2];
+                        rt.e2[0] = poly[m + 1][0] - poly[0][0]; rt.e2[1] = poly[m + 1][1] - poly[0][1]; rt.e2[2] = poly[m + 1][2] - poly[0][2];
+                        rt.flags = flags;
+                        rt.owner = 0;
+                        direct_tris.push_back(rt);
+                    }
+                }
+        };
         // 1. BSP Polygons (UModel)
         for (size_t i = 0; i < src.exports.size(); ++i) {
             const auto& e = src.exports[i];
             if (ClassNameOf(src, e) != "Model" || e.outer_index <= 0) continue;
             size_t outer_idx = static_cast<size_t>(e.outer_index - 1);
             if (outer_idx >= src.exports.size() || ClassNameOf(src, src.exports[outer_idx]) != "Level") continue;
-
-            size_t after_p = 0;
-            ReadExportProps(src, i, &after_p);
-            const uint8_t* data = src.body.data();
-            size_t total_size = src.body.size();
-            size_t p = after_p + 28; // Bounds
-
-            int32_t vec_size = ReadI32(data, total_size, p);
-            int32_t vec_count = ReadI32(data, total_size, p);
-            p += static_cast<size_t>(vec_size * vec_count);
-
-            int32_t pt_size = ReadI32(data, total_size, p);
-            int32_t pt_count = ReadI32(data, total_size, p);
-            const float* pts = reinterpret_cast<const float*>(data + p);
-            p += static_cast<size_t>(pt_size * pt_count);
-
-            int32_t node_size = ReadI32(data, total_size, p);
-            int32_t node_count = ReadI32(data, total_size, p);
-            const uint8_t* nodes = data + p;
-            p += static_cast<size_t>(node_size * node_count);
-
-            ReadI32(data, total_size, p); // TTransArray owner
-            int32_t nsurf = ReadI32(data, total_size, p);
-            std::vector<uint32_t> surf_flags(nsurf);
-            for (int s = 0; s < nsurf; ++s) {
-                std::memcpy(&surf_flags[s], data + p + s * 56 + 4, 4);
-            }
-            p += static_cast<size_t>(nsurf) * 56;
-
-            int32_t v_size = ReadI32(data, total_size, p);
-            int32_t v_count = ReadI32(data, total_size, p);
-            (void)v_count;
-            const uint8_t* vraw = data + p;
-
-            if (pt_size != 12 || node_size != 64) continue;
-
-            for (int k = 0; k < node_count; ++k) {
-                size_t noff = static_cast<size_t>(k) * 64;
-                int32_t ivp = 0, isurf = 0;
-                std::memcpy(&ivp, nodes + noff + 16, 4);
-                std::memcpy(&isurf, nodes + noff + 20, 4);
-                uint8_t nverts = nodes[noff + 54];
-                if (nverts < 3) continue;
-                uint32_t sflag = (isurf >= 0 && isurf < nsurf) ? surf_flags[isurf] : 0;
-                if (sflag & 0x8) continue; // PF_NotSolid
-
-                std::vector<std::array<float, 3>> poly(nverts);
-                for (int j = 0; j < nverts; ++j) {
-                    int32_t pv = 0;
-                    std::memcpy(&pv, vraw + (ivp + j) * v_size, 4);
-                    if (pv >= 0 && pv < pt_count) {
-                        poly[j] = {pts[pv * 3 + 0], pts[pv * 3 + 1], pts[pv * 3 + 2]};
-                    }
-                }
-                // Fan triangulate
-                for (int m = 1; m < nverts - 1; ++m) {
-                    RawTri rt{};
-                    rt.v0[0] = poly[0][0]; rt.v0[1] = poly[0][1]; rt.v0[2] = poly[0][2];
-                    rt.e1[0] = poly[m][0] - poly[0][0]; rt.e1[1] = poly[m][1] - poly[0][1]; rt.e1[2] = poly[m][2] - poly[0][2];
-                    rt.e2[0] = poly[m + 1][0] - poly[0][0]; rt.e2[1] = poly[m + 1][1] - poly[0][1]; rt.e2[2] = poly[m + 1][2] - poly[0][2];
-                    rt.flags = 3;
-                    rt.owner = 0;
-                    direct_tris.push_back(rt);
-                }
-            }
+            emit_model(i, [](float*) {}, 3);
+        }
+        // 1b. Blocking volumes: invisible walls that stop soldiers, not
+        // bullets (BlockingVolume, AA_PlayerBlockingVolume): their brush,
+        // placed by the volume's PrePivot, DrawScale(3D), Rotation and
+        // Location, as kBlockPawn only. Without them routes ran where
+        // retail stops a soldier (Bridge, 2026-10-12).
+        for (size_t i = 0; i < src.exports.size(); ++i) {
+            const auto& e = src.exports[i];
+            const std::string cls = ClassNameOf(src, e);
+            if (cls != "BlockingVolume" && cls != "AA_PlayerBlockingVolume") continue;
+            if (e.outer_index <= 0 || static_cast<size_t>(e.outer_index - 1) >= src.exports.size() ||
+                ClassNameOf(src, src.exports[static_cast<size_t>(e.outer_index - 1)]) != "Level")
+                continue;
+            auto brush = GetInheritedProp(src, i, "Brush");
+            if (!brush || brush->obj_ref <= 0) continue;
+            const size_t mi = static_cast<size_t>(brush->obj_ref - 1);
+            if (mi >= src.exports.size()) continue;
+            float loc[3] = {0, 0, 0}, pre[3] = {0, 0, 0}, s3[3] = {1, 1, 1};
+            if (auto l = GetInheritedProp(src, i, "Location"); l && l->type == PropertyValue::kVector)
+                std::memcpy(loc, l->vec_val, 12);
+            if (auto pp = GetInheritedProp(src, i, "PrePivot"); pp && pp->type == PropertyValue::kVector)
+                std::memcpy(pre, pp->vec_val, 12);
+            float ds = 1.0f;
+            if (auto d = GetInheritedProp(src, i, "DrawScale"); d && d->type == PropertyValue::kFloat) ds = d->float_val;
+            if (auto d3 = GetInheritedProp(src, i, "DrawScale3D"); d3 && d3->type == PropertyValue::kVector)
+                std::memcpy(s3, d3->vec_val, 12);
+            int32_t rot[3] = {0, 0, 0};
+            if (auto r = GetInheritedProp(src, i, "Rotation"); r && r->type == PropertyValue::kRotator)
+                std::memcpy(rot, r->rot_val, 12);
+            float R[3][3];
+            RotationMatrix(rot[0], rot[1], rot[2], R);
+            emit_model(mi, [&](float* v) {
+                const float lx = (v[0] - pre[0]) * s3[0] * ds, ly = (v[1] - pre[1]) * s3[1] * ds,
+                            lz = (v[2] - pre[2]) * s3[2] * ds;
+                v[0] = lx * R[0][0] + ly * R[1][0] + lz * R[2][0] + loc[0];
+                v[1] = lx * R[0][1] + ly * R[1][1] + lz * R[2][1] + loc[1];
+                v[2] = lx * R[0][2] + ly * R[1][2] + lz * R[2][2] + loc[2];
+            }, 1);
         }
 
         // 2. Terrain Heightmaps (ATerrain)
@@ -635,6 +680,13 @@ bool PackageExtractor::ExtractCollision(std::vector<uint8_t>& out_col_bytes,
             if (!EndsWith(cls, "StaticMeshActor") && !EndsWith(cls, "BreakableWindow") &&
                 !EndsWith(cls, "Door") && !EndsWith(cls, "InterpActor") &&
                 !EndsWith(cls, "DynamicSMActor") && !EndsWith(cls, "KActor"))
+                continue;
+            // Only actors placed in a level. Prefab templates (outer = the
+            // prefab, no Location) aren't in the world: taken as placed at
+            // the origin they made phantom walls -- Bridge's sun lens-flare
+            // template was a 14400-unit wall through the map (2026-10-12).
+            if (e.outer_index <= 0 || static_cast<size_t>(e.outer_index - 1) >= src.exports.size() ||
+                ClassNameOf(src, src.exports[static_cast<size_t>(e.outer_index - 1)]) != "Level")
                 continue;
 
             auto c_prop = GetInheritedProp(src, i, "StaticMeshComponent");

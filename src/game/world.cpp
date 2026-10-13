@@ -17,7 +17,9 @@ namespace game {
 World::World() : tod_("Day") {
 }
 
-World::~World() = default;
+World::~World() {
+    if (nav_thread_.joinable()) nav_thread_.join();
+}
 //This should come the map information
 void World::Initialize(const std::string& map_name) {
     map_name_ = map_name;
@@ -254,6 +256,7 @@ void World::EnterPhase(MatchPhase phase) {
                     ? gri_->mission_time_remaining : game_info_->default_time_limit_seconds;
             gri_->mission_time_limit_seconds = time_limit_seconds_;
             gri_->mission_time_remaining = time_limit_seconds_;
+            SpawnNPCs();
             gri_->respawn_players_needed = {1, 1};
             had_valid_players_ = {false, false};
             break;
@@ -294,6 +297,7 @@ void World::UpdateMatch(double dt) {
         if (gri_->deployment_time_remaining <= 0) EnterPhase(MatchPhase::kInProgress);
         break;
     case MatchPhase::kInProgress:
+        UpdateReinforcements();
         // Also covers players who join a team after the round started.
         SpawnPlayers();
         // Retail t=23.83: bStopCountDown False ~1s after MatchInProgress.
@@ -361,6 +365,7 @@ void World::CheckRoundEnd(bool second_tick) {
         for (const auto& pc : controllers_) {
             ServerPawn* p = pc->pawn;
             if (TeamOf(*pc) != team || !p || p->torn_off || p->incapacitated) continue;
+            if (rule.carry && p != carry_.carrier) continue;   // only the briefcase's carrier extracts
             for (const auto& b : rule.boxes) {
                 if (p->location[0] >= b[0] && p->location[1] >= b[1] && p->location[2] >= b[2] &&
                     p->location[0] <= b[3] && p->location[1] <= b[4] && p->location[2] <= b[5]) {
@@ -387,10 +392,18 @@ void World::CheckRoundEnd(bool second_tick) {
     // Team death (AA_GameInfo MatchInProgress.Timer + CheckForWinningTeam):
     // a team that had soldiers this round and has none left loses; nobody
     // left on either side is a tie.
+    // Co-op reinforcements don't change this: retail ends the round as soon
+    // as a team has nobody up, even with respawn points (Bridge AI bot run,
+    // 2026-10-12); F5 helps only while a teammate is alive. A player waiting
+    // in the reinforcement queue doesn't count as alive.
     const bool alive0 = TeamStillAlive(0), alive1 = TeamStillAlive(1);
     if (alive0) had_valid_players_[0] = true;
     if (alive1) had_valid_players_[1] = true;
-    if (!alive0 && !alive1) EndRound(-1, "both teams down");
+    // A side with no players at all (the enemy NPCs' side in an AI
+    // mission) isn't "down": the players going down lose (retail Bridge AI).
+    if (!alive0 && !alive1 && had_valid_players_[0] != had_valid_players_[1])
+        EndRound(had_valid_players_[0] ? 1 : 0, "team down vs AI");
+    else if (!alive0 && !alive1) EndRound(-1, "both teams down");
     else if (!alive0 && had_valid_players_[0]) EndRound(1, "team 0 down");
     else if (!alive1 && had_valid_players_[1]) EndRound(0, "team 1 down");
 }
@@ -492,6 +505,11 @@ void World::ResetLevel() {
         }
     }
     window_hits_.clear();
+    ResetCarriedObjective();
+    for (auto& a : world_items_) a->gone = true;      // dropped rifles go with the level
+    item_timers_.clear();
+    for (auto& q : respawn_queue_) q.clear();
+    next_wave_at_ = -1.0;
     for (auto& a : join_actors_) {
         if (a->class_name == "AA_BreakableWindowManager") {
             for (auto& f : a->fields)
@@ -534,6 +552,7 @@ bool World::LoadMissionRulesFromJson(const std::string& json) {
     for (const auto& e : (*doc)["extraction"].arr) {
         ExtractionRule r;
         r.team = static_cast<int32_t>(e["extracting_team"].Int());
+        r.carry = e["carry"].b;
         r.min_players = static_cast<int32_t>(e["min_players"].Int(1));
         r.objective = e["objective"].Str();
         for (const auto& b : e["boxes"].arr) {
@@ -545,6 +564,46 @@ bool World::LoadMissionRulesFromJson(const std::string& json) {
             r.boxes.push_back(box);
         }
         extraction_rules_.push_back(r);
+    }
+    carry_ = CarriedObjective{};
+    if ((*doc).Has("carry")) {
+        const util::JsonValue& c = (*doc)["carry"];
+        carry_.active = true;
+        carry_.factory_pkg = c["factory"]["pkg"].Str();
+        carry_.factory_net = static_cast<uint32_t>(c["factory"]["net"].Int());
+        for (size_t k = 0; k < 3 && k < c["location"].arr.size(); ++k)
+            carry_.home[k] = static_cast<float>(c["location"].arr[k].num);
+    }
+    npc_starts_.clear();
+    npc_firing_positions_.clear();
+    npc_max_ = 0;
+    if ((*doc).Has("npc")) {
+        const util::JsonValue& n = (*doc)["npc"];
+        npc_max_ = static_cast<int32_t>(n["max"].Int(35));
+        for (const auto& s : n["starts"].arr) {
+            NpcStart st;
+            for (size_t k = 0; k < 3 && k < s["location"].arr.size(); ++k)
+                st.loc[k] = static_cast<float>(s["location"].arr[k].num);
+            st.yaw = static_cast<int32_t>(s["yaw"].Int());
+            st.weapon = s["weapon"].Str();
+            npc_starts_.push_back(st);
+        }
+        for (const auto& f : n["firing_positions"].arr)
+            if (f.arr.size() == 3)
+                npc_firing_positions_.push_back({static_cast<float>(f.arr[0].num), static_cast<float>(f.arr[1].num),
+                                                 static_cast<float>(f.arr[2].num)});
+        LOG_INFO("Enemy NPCs: %zu starts, %zu firing positions, cap %d", npc_starts_.size(),
+                 npc_firing_positions_.size(), npc_max_);
+    }
+    respawn_markers_.clear();
+    for (const auto& r : (*doc)["respawn_markers"].arr) {
+        RespawnMarker m;
+        m.team = static_cast<int32_t>(r["team"].Int());
+        m.enabled = !r.Has("enabled") || r["enabled"].b;
+        for (size_t k = 0; k < 3 && k < r["location"].arr.size(); ++k)
+            m.loc[k] = static_cast<float>(r["location"].arr[k].num);
+        m.yaw = static_cast<int32_t>(r["yaw"].Int());
+        respawn_markers_.push_back(m);
     }
     viewpoints_.clear();
     for (const auto& v : (*doc)["viewpoints"].arr) viewpoints_.push_back(static_cast<uint32_t>(v.Int()));
@@ -945,6 +1004,13 @@ ServerPawn* World::SpawnPawn(ServerPlayerController& pc) {
     if (!pc.pri || !pc.pri->OnPlayableTeam() || pc.pawn) return pc.pawn;
     const int32_t team = pc.pri->team->team_index;
     const SpawnPoint* fsp = FireTeamSpawn(pc);
+    SpawnPoint reinforcement{};
+    if (pc.has_respawn_spot) {                  // a co-op reinforcement point
+        for (int k = 0; k < 3; ++k) reinforcement.loc[k] = pc.respawn_spot[k];
+        reinforcement.yaw = pc.respawn_spot_yaw;
+        fsp = &reinforcement;
+        pc.has_respawn_spot = false;
+    }
     const SpawnPoint& sp = fsp ? *fsp : spawn_points_[static_cast<size_t>(swapped_ ? 1 - team : team)];
     auto pawn = std::make_unique<ServerPawn>();
     pawn->object_index = BaselineIndex(net_index::kPawn);
@@ -1016,29 +1082,41 @@ void World::SpawnPlayers() {
 // 0.27 s later VaultMantleHeight, MovingToTarget off,
 // ClientFinishVaultMantleMoveToTarget(), body graph {106}, gravity off; at
 // +1.47 s graph {7} and gravity back on.
-void World::StartMoveToTarget(ServerPawn* pawn, const float target[3]) {
+//
+// A ladder mounted from the top starts with the same move, its callback
+// FinishLadderMoveToTarget (retail Bridge AI capture 2026-10-12, 13:37:53):
+// 0.14 s later MovingToTarget off and ClientFinishLadderMoveToTarget(), no
+// vault states; the client then sends ServerClimbLadder.
+void World::StartMoveToTarget(ServerPawn* pawn, const float target[3], bool ladder) {
     if (!pawn || pawn->torn_off || pawn->incapacitated) return;
     pawn->moving_to_target = true;
+    pawn->move_to_ladder = ladder;
     for (int k = 0; k < 3; ++k) pawn->vault_target[k] = target[k];
-    pawn->vault_finish_at = clock_ + 0.27;
+    pawn->vault_finish_at = clock_ + (ladder ? 0.14 : 0.27);
 }
 
 // Ladders as retail (t=227.72 / 232.92): mount -> ClientSlingWeapon(),
 // graph 2 {174}, gravity off, weapon graph {117} 0.5 s later; dismount ->
-// graph 2 {7}, graph 3 {11 -> 0}, gravity on.
+// graph 2 {7}, graph 3 {11 -> 0}, gravity on. Climbing down (mounted from
+// the top through FinishLadderMoveToTarget; Bridge AI capture 13:37:53):
+// weapon graph {23} at +0.47 s, dismount graph 3 {22 -> 0}.
 void World::ClimbLadder(ServerPawn* pawn, bool on) {
     if (!pawn || pawn->torn_off || pawn->incapacitated || pawn->on_ladder == on) return;
     pawn->on_ladder = on;
     pawn->graph_steps.clear();
     if (on) {
+        pawn->ladder_down = pawn->move_to_ladder;
+        pawn->move_to_ladder = false;
         ++pawn->sling_serial;
         pawn->SetGraph(2, 174, 174);
         pawn->b_simulate_gravity = false;
-        pawn->graph_steps.push_back({clock_ + 0.5, 3, 117, 117});
+        if (pawn->ladder_down) pawn->graph_steps.push_back({clock_ + 0.47, 3, 23, 23});
+        else pawn->graph_steps.push_back({clock_ + 0.5, 3, 117, 117});
     } else {
         pawn->SetGraph(2, 7, 7);
-        pawn->SetGraph(3, 11, 0);
+        pawn->SetGraph(3, pawn->ladder_down ? 22 : 11, 0);
         pawn->b_simulate_gravity = true;
+        pawn->ladder_down = false;
     }
 }
 
@@ -1097,6 +1175,11 @@ void World::ApplyPawnAction(ServerPawn* pawn, PawnAction a, bool arg) {
     case PawnAction::kRaiseSights:
         if (p.sprinting) break;
         p.sights = true;
+        // Sighting puts the soldier in the tactical (combat-ready) stance,
+        // which outlasts the sights: lowering them goes to {22}, not the
+        // relaxed {11} (retail Bridge AI capture 13:24:15-17, the DMR's
+        // ACOG; with {11} the client kept the scope's focus blur).
+        p.tactical = true;
         if (p.prone) {                                   // retail t=581.54: {114->17} .. {64->64}, 45 -> 23
             Transition(p, clock_, 114, 17, 0);
             p.graph_steps.push_back({clock_ + 0.17, 2, 64, 64});
@@ -1207,6 +1290,11 @@ void World::UpdatePostures(double dt) {
             if (p->burst_left > 0) --p->burst_left;
             FireRound(*p);
             p->next_shot_at += 0.075;
+        }
+        if (p->vault_finish_at >= 0.0 && clock_ >= p->vault_finish_at && p->move_to_ladder) {
+            p->vault_finish_at = -1.0;
+            p->moving_to_target = false;
+            ++p->ladder_finish_serial;              // ClientFinishLadderMoveToTarget()
         }
         if (p->vault_finish_at >= 0.0 && clock_ >= p->vault_finish_at) {
             p->vault_finish_at = -1.0;
@@ -1352,29 +1440,11 @@ void World::TraceShot(ServerPawn& pawn, ServerRoundActor& weapon) {
     const Vec3 end{start.x + dir.x * kRange, start.y + dir.y * kRange, start.z + dir.z * kRange};
     TraceHit hit = collision_.LineTrace(start, end, CollisionWorld::kBlockTrace);
     // Soldiers: vertical cylinders (radius 22, half-height 48 standing, 34
-    // crouched, 14 prone) around each live pawn's location; the nearest hit
-    // in front of the map's wins.
-    ServerPawn* victim = nullptr;
+    // crouched, 14 prone) around each live pawn's location -- players and
+    // enemy NPCs; the nearest hit in front of the map's wins.
     float best_t = hit.hit ? hit.time : 1.0f;
     const Vec3 seg{end.x - start.x, end.y - start.y, end.z - start.z};
-    for (auto& other : pawns_) {
-        ServerPawn& o = *other;
-        if (&o == &pawn || o.torn_off || !o.controller) continue;
-        const float r = 22.0f, hh = o.prone ? 14.0f : (o.crouched ? 34.0f : 48.0f);
-        const float cx = o.location[0] - start.x, cy = o.location[1] - start.y;
-        const float a = seg.x * seg.x + seg.y * seg.y;
-        if (a < 1e-6f) continue;
-        const float b = -2.0f * (cx * seg.x + cy * seg.y);
-        const float c = cx * cx + cy * cy - r * r;
-        const float disc = b * b - 4 * a * c;
-        if (disc < 0) continue;
-        const float t = (-b - std::sqrt(disc)) / (2 * a);
-        if (t < 0 || t >= best_t) continue;
-        const float z = start.z + seg.z * t;
-        if (z < o.location[2] - hh || z > o.location[2] + hh) continue;
-        best_t = t;
-        victim = &o;
-    }
+    ServerPawn* victim = TracePawns(start, seg, &pawn, /*skip_npcs=*/false, &best_t);
     const Vec3 at = victim ? Vec3{start.x + seg.x * best_t, start.y + seg.y * best_t, start.z + seg.z * best_t}
                            : (hit.hit ? hit.location : end);
     if (victim) DamagePawn(*victim, &pawn, at, dir);
@@ -1402,6 +1472,7 @@ void World::TraceShot(ServerPawn& pawn, ServerRoundActor& weapon) {
 // legs 25), the impact replicated through PawnShotEffectInfo so clients
 // draw the hit, Health to the owner.
 void World::DamagePawn(ServerPawn& victim, ServerPawn* shooter, const Vec3& at, const Vec3& dir) {
+    if (!victim.is_npc && !victim.first_reload_done) return;   // spawn protection (retail)
     const float hh = victim.prone ? 14.0f : (victim.crouched ? 34.0f : 48.0f);
     const float rel = at.z - victim.location[2];
     // Zone -> eHitLocation and the hit's total: head 100 (no wound, down at
@@ -1417,16 +1488,16 @@ void World::DamagePawn(ServerPawn& victim, ServerPawn* shooter, const Vec3& at, 
     const float now = total * 0.43f;
     ApplyDamage(victim, shooter, now, 6464, at, dir);
     if (!victim.torn_off && !victim.incapacitated)
-        AddWound(victim, location, total - now, shooter && shooter->pri ? shooter->pri->player_name : "Unknown");
+        AddWound(victim, location, total - now, SoldierName(shooter));
 }
 
 void World::ApplyDamage(ServerPawn& victim, ServerPawn* shooter, float dmg, uint32_t damage_class,
                         const Vec3& at, const Vec3& dir) {
     if (victim.torn_off || dmg <= 0.0f) return;
+    if (!victim.is_npc && !victim.first_reload_done) return;   // spawn protection (retail)
     // A soldier already down dies to the next hit (doc sec 35).
     if (victim.incapacitated) {
-        LOG_INFO("%s finished %s", shooter && shooter->pri ? shooter->pri->player_name.c_str() : "?",
-                 victim.pri ? victim.pri->player_name.c_str() : "?");
+        LOG_INFO("%s finished %s", SoldierName(shooter).c_str(), SoldierName(&victim).c_str());
         KillPawn(victim, shooter);
         return;
     }
@@ -1441,10 +1512,17 @@ void World::ApplyDamage(ServerPawn& victim, ServerPawn* shooter, float dmg, uint
     victim.shot_effect_hit_location[2] = at.z;
     victim.shot_effect_hit_rotation_yaw = static_cast<int32_t>(std::atan2(dir.y, dir.x) * 32768.0 / 3.14159265358979) & 0xFFFF;
     victim.shot_effect_hit_rotation_pitch = static_cast<int32_t>(std::asin(std::max(-1.0f, std::min(1.0f, dir.z))) * 32768.0 / 3.14159265358979) & 0xFFFF;
-    LOG_INFO("%s hit %s for %.0f (health %.0f)", shooter && shooter->pri ? shooter->pri->player_name.c_str() : "?",
-             victim.pri ? victim.pri->player_name.c_str() : "?", dmg, victim.health);
-    if (victim.health <= kIncapacitationHealth)
-        Incapacitate(victim, damage_class, shooter && shooter->pri ? shooter->pri->player_name : "Unknown");
+    LOG_INFO("%s hit %s for %.0f (health %.0f)", SoldierName(shooter).c_str(), SoldierName(&victim).c_str(), dmg,
+             victim.health);
+    if (shooter && shooter->controller) victim.last_hit_by_client = shooter->controller->owning_client_id;
+    if (victim.is_npc && shooter) {
+        victim.npc_last_hit_by = shooter;
+        victim.npc_last_hit_at = clock_;
+    }
+    if (victim.health <= kIncapacitationHealth) {
+        if (victim.is_npc) KillPawn(victim, shooter);          // an NPC is neutralized outright
+        else Incapacitate(victim, damage_class, SoldierName(shooter));
+    }
 }
 
 // AA_Pawn.MovementSpeedModifier as retail sends it while hurt: 0.8852 at
@@ -1467,6 +1545,13 @@ float World::InjuredSpeedModifier(float health) {
 // 1.2 s graph 0 {42 -> 13} + bRagdollTick/bRagdollStuck, which settles the
 // ragdoll into the incapacitated pose (UpdateIncapacitated).
 void World::Incapacitate(ServerPawn& victim, uint32_t damage_class, const std::string& instigator) {
+    if (victim.is_npc) {                        // bled down: neutralized
+        KillPawn(victim, nullptr);
+        return;
+    }
+    // Down with the case: the HUD's "drop it for a squad member" notice
+    // (AA_Pawn: ClientNotifyIncapacitatedWithObjective).
+    if (carry_.active && carry_.carrier == &victim && victim.controller) ++victim.controller->objective_incap_serial;
     // The bleed still owed, for a revive (doc sec 39): retail keeps
     // HealthTarget while down; ours shows 25.
     victim.target_before_incap = std::min(victim.health_target, victim.health);
@@ -1545,6 +1630,7 @@ void World::UpdateIncapacitated(double dt) {
 // animation states; PRI Deaths+1, iDied, bIsDead; PlayerStorageProxy
 // bIsDead; the controller loses its pawn (the client goes to spectating).
 void World::KillPawn(ServerPawn& victim, ServerPawn* killer) {
+    DropObjective(victim);                      // a carried briefcase falls with the soldier
     // Treatment links end with the soldier.
     StopTreatment(&victim);
     for (auto& p : pawns_)
@@ -1569,6 +1655,18 @@ void World::KillPawn(ServerPawn& victim, ServerPawn* killer) {
         killer->pri->kills += 1;
         killer->pri->score += 1;
     }
+    // An enemy NPC: whoever last hurt it gets the neutralization notice.
+    if (victim.is_npc) {
+        ServerPlayerController* kpc = killer && killer->controller ? killer->controller
+                                                                    : FindPlayerController(victim.last_hit_by_client);
+        if (kpc) {
+            kpc->last_npc_kill = victim.npc_name;
+            ++kpc->npc_kill_serial;
+            if (kpc->pri) kpc->pri->score += 10;
+        }
+        npc_brains_.erase(&victim);
+        DropNpcWeapon(victim);
+    }
     if (pc) {
         if (pc->proxy) {
             pc->proxy->is_dead = true;
@@ -1582,8 +1680,7 @@ void World::KillPawn(ServerPawn& victim, ServerPawn* killer) {
         pc->died = true;
         pc->respawn_at = respawn_delay_ > 0 ? clock_ + respawn_delay_ : -1.0;
     }
-    LOG_INFO("%s killed %s", killer && killer->pri ? killer->pri->player_name.c_str() : "?",
-             victim.pri ? victim.pri->player_name.c_str() : "?");
+    LOG_INFO("%s killed %s", SoldierName(killer).c_str(), SoldierName(&victim).c_str());
 }
 
 // A bullet hit a dynamic map actor (doc sec 32). Breakable windows as on a
@@ -1833,6 +1930,7 @@ void World::UpdateReloads() {
             it->stage = 5;
         }
         if (it->stage == 5 && t >= 6.78) {                 // initial reload done: weapon ready
+            pawn->first_reload_done = true;
             SetWeaponROF(*pawn, pawn->selected_rof);      // off Safe (retail t=29.75)
             pawn->SetGraph(4, 79, 79);
             it = reloads_.erase(it);
@@ -1922,6 +2020,7 @@ bool World::BindPackageMap(const engine::MapManifest& manifest,
         } else if (ReadActorTemplates("config/maps/" + game_mode_level_ + ".join.json", "join-actor", t)) {
             join_actors_ = Instantiate(t, {});
         }
+        SetupCarriedObjective();
 
         t.clear();
         if (bundle && bundle->GetActorJson(engine::SectionType::kMatchActors, act_json)) {
@@ -1957,6 +2056,7 @@ bool World::BindPackageMap(const engine::MapManifest& manifest,
     } else {
         collision_.Load("data/collision/" + manifest.url + ".col");
     }
+    StartNavBuild();                            // NPC routes (AI missions), in the background
     // Every spawn gets retail's Fireteam Leader kit for now (doc sec 30).
     std::string inv_json;
     if (bundle && bundle->GetActorJson(engine::SectionType::kSpawnInventory, inv_json)) {
@@ -2061,6 +2161,9 @@ void World::Update(double delta_time) {
     UpdatePostures(delta_time);
     UpdateIncapacitated(delta_time);
     UpdateDoors();
+    UpdateObjective();
+    UpdateWorldItems();
+    if (phase_ == MatchPhase::kInProgress) UpdateNPCs(delta_time);
 
     if (world_info_) {
         world_info_->real_time_seconds += static_cast<float>(delta_time);

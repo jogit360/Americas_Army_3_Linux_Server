@@ -459,7 +459,7 @@ class Client:
         while True:
             with self.lock:
                 q = self.in_rec.get(ch, {})
-                nxt = self.in_rel[ch] + 1
+                nxt = self.in_rel.get(ch, 0) + 1
                 if nxt not in q:
                     return
                 item = q.pop(nxt)

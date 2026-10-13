@@ -1008,13 +1008,33 @@ void ProtocolHandler::DecodeActorBunch(uint32_t client_id, uint32_t ch_index,
                 LOG_INFO("Client %u: reload requested", client_id);
             } else if (idx == 130) {                        // ServerSetGuardState(bGuard)
                 reader.ReadBit();
-            } else if (idx == 97) {                         // ServerStartMoveToTarget(TargetLocation, ...)
+            } else if (idx == 97) {
+                // ServerStartMoveToTarget(TargetLocation, TargetRotation,
+                // FinishMoveCallback, fMinDistanceToTarget). The callback
+                // (delegate: object, then the function's FName) says what the
+                // move is for: FinishLadderMoveToTarget mounts a ladder from
+                // the top, anything else is a vault/mantle (Bridge AI capture
+                // 2026-10-12, 13:37:53).
                 int32_t v[3] = {0, 0, 0};
                 if (reader.ReadBit()) ReadCompressedVector(reader, v);
+                if (reader.ReadBit())                       // TargetRotation: per component, bit + byte
+                    for (int k = 0; k < 3; ++k)
+                        if (reader.ReadBit()) reader.ReadBits(8);
+                std::string callback;
+                if (reader.ReadBit()) {                     // FinishMoveCallback
+                    if (reader.ReadBit()) reader.ReadIntMax(0x800); else reader.ReadIntMax(0x80000000);
+                    const int32_t n = static_cast<int32_t>(reader.ReadBits(32));
+                    for (int32_t k = 0; k < n && k < 64; ++k) {
+                        const char ch = static_cast<char>(reader.ReadBits(8));
+                        if (ch) callback += ch;
+                    }
+                }
+                const bool ladder = callback == "FinishLadderMoveToTarget";
                 const float t[3] = {static_cast<float>(v[0]), static_cast<float>(v[1]), static_cast<float>(v[2])};
-                if (pc && pc->pawn) world_->StartMoveToTarget(pc->pawn, t);
-                LOG_INFO("Client %u: vault/mantle to (%d, %d, %d)", client_id, v[0], v[1], v[2]);
-                return;                                     // rest: rotator, delegate, float -- unused
+                if (pc && pc->pawn) world_->StartMoveToTarget(pc->pawn, t, ladder);
+                LOG_INFO("Client %u: %s to (%d, %d, %d)", client_id, ladder ? "move to ladder" : "vault/mantle",
+                         v[0], v[1], v[2]);
+                return;                                     // rest: the FName number, the float -- unused
             } else if (idx == 103 || idx == 104) {          // ServerClimbLadder(L) / ServerEndClimbLadder(OldLadder)
                 if (reader.ReadBit()) { if (reader.ReadBit()) reader.ReadIntMax(0x800); else reader.ReadIntMax(0x80000000); }
                 if (pc && pc->pawn) world_->ClimbLadder(pc->pawn, idx == 103);
@@ -1169,6 +1189,47 @@ void ProtocolHandler::ApplyPcRpc(uint32_t client_id, ClientSession& sess,
             // ClientLoc==(1,2,3) is UE3's "no location" sentinel (DualServerMove
             // passes it for the first half; PlayerController.uc:2835).
             bool has_loc = loc.sent && !(loc.v[0] == 1 && loc.v[1] == 2 && loc.v[2] == 3);
+            // Movement checks (the server has no movement physics, so the
+            // client's location used to be taken as is): a downed or dead
+            // soldier stays put; a move faster than any soldier can go, or
+            // through solid map geometry at knee and chest height, is
+            // refused and the client put back (ClientAdjustPosition).
+            if (has_loc && (pc->pawn->incapacitated || pc->pawn->torn_off)) has_loc = false;
+            if (has_loc && world_ && world_->MovementChecks()) {
+                const float* cur = pc->pawn->location;
+                const float dx = loc.v[0] - cur[0], dy = loc.v[1] - cur[1];
+                const float dist = std::sqrt(dx * dx + dy * dy);
+                const float dt_move = ts - prev_ts;
+                const float allowed = (prev_ts > 0.0f && dt_move > 0.0f && dt_move < 1.0f ? 650.0f * dt_move : 200.0f) + 60.0f;
+                bool refuse = dist > allowed;
+                const bool special = pc->pawn->on_ladder || pc->pawn->moving_to_target || pc->pawn->vault_gravity_at >= 0.0;
+                if (!refuse && !special && dist > 8.0f) {
+                    int blocked = 0;
+                    for (float h : {-25.0f, 20.0f}) {
+                        const game::TraceHit t = world_->Collision().LineTrace(
+                            {cur[0], cur[1], cur[2] + h},
+                            {static_cast<float>(loc.v[0]), static_cast<float>(loc.v[1]), static_cast<float>(loc.v[2]) + h},
+                            game::CollisionWorld::kBlockPawn);
+                        if (t.hit && t.owner == 0) ++blocked;       // doors/windows (owners) aside
+                    }
+                    refuse = blocked == 2;
+                }
+                if (refuse) {
+                    has_loc = false;
+                    ++sess.refused_moves;
+                    const uint64_t now = NowUs();
+                    if (now >= sess.next_correction_us) {
+                        sess.next_correction_us = now + 200'000;
+                        const float still[3] = {0.0f, 0.0f, 0.0f};
+                        util::BitWriter g;
+                        BuildClientAdjustPositionRPC(g, ts, "PlayerWalking", 1, cur, still);
+                        SendActorUpdateBunch(client_id, kPCChannel, g, /*reliable=*/false);
+                    }
+                    if (sess.refused_moves == 1 || sess.refused_moves % 100 == 0)
+                        LOG_INFO("Client %u: move refused (%.0f units in %.2fs) at (%.0f, %.0f, %.0f) [%u refused]",
+                                 client_id, dist, dt_move, cur[0], cur[1], cur[2], sess.refused_moves);
+                }
+            }
             if (has_loc) {
                 // Velocity for non-owners' SimulatedProxy extrapolation, from
                 // consecutive client positions (no server physics to supply
@@ -1321,6 +1382,7 @@ void ProtocolHandler::ApplyPcRpc(uint32_t client_id, ClientSession& sess,
         case PcRpc::kServerRaiseSights:
         case PcRpc::kServerLowerSights: {
             const bool raise = rpc.id == PcRpc::kServerRaiseSights;
+            if (raise && pc && pc->pawn && !pc->pawn->sprinting) pc->tactical_combat = true;   // see kRaiseSights
             if (world_ && pc)
                 world_->ApplyPawnAction(pc->pawn, raise ? game::World::PawnAction::kRaiseSights
                                                         : game::World::PawnAction::kLowerSights);
@@ -1401,6 +1463,31 @@ void ProtocolHandler::ApplyPcRpc(uint32_t client_id, ClientSession& sess,
         }
         case PcRpc::kServerES2Active:
             break;                                  // the report itself isn't modelled
+        case PcRpc::kServerDropObjective:
+            if (pc && world_ && world_->DropObjectiveByChoice(*pc))
+                LOG_INFO("Client %u: dropped the objective for a teammate", client_id);
+            break;
+        case PcRpc::kServerRequestRespawn:            // F5: co-op reinforcement
+            if (pc && world_) world_->RequestRespawn(*pc);
+            break;
+        case PcRpc::kServerRepExec: {
+            // ServerRepExec(ExecAction, ContextActor): 'Pickup' on the
+            // briefcase's factory (a static object) or a dropped briefcase
+            // (one of this connection's channels).
+            if (p[0].s != "Pickup" || !pc || !world_) break;
+            const game::ServerActor* obj = nullptr;
+            uint32_t static_obj = 0;
+            if (p[1].dynamic) {
+                for (const auto& kvp : sess.actor_channel)
+                    if (kvp.second == static_cast<uint32_t>(p[1].i)) obj = kvp.first;
+            } else {
+                static_obj = static_cast<uint32_t>(p[1].i);
+            }
+            const bool ok = world_->PickUpObjective(*pc, static_obj, obj);
+            LOG_INFO("RX client %u: ServerRepExec('Pickup', %s %d) -> %s", client_id,
+                     p[1].dynamic ? "ch" : "obj", p[1].i, ok ? "picked up" : "nothing");
+            break;
+        }
         // IFAK treatment (retail capture 2026-10-11; doc sec 39). Start:
         // SetTreatmentOnRequestingClient(patient), weapon to low ready;
         // stop: SetTreatmentOnRequestingClient(None), weapon back up.
@@ -1517,6 +1604,17 @@ void ProtocolHandler::PossessPawn(uint32_t client_id, ClientSession& sess,
     BuildClientSetViewTargetRPC(d, 0);
     BuildNotifyWeaponReadyChangeRPC(d, true);
     BuildNotifyTacticalCombatPostureChangeRPC(d, false);
+    // A mid-round respawn (co-op reinforcement; retail Bridge AI 13:42:44)
+    // brings the client out of spectating first: camera and spectator mode
+    // FirstPerson before ClientRestart, ClientGotoState('PlayerWalking')
+    // after the pawn (below).
+    const bool respawn = world_ && world_->GetGRI() && sess.died_in_round == world_->GetGRI()->i_current_round &&
+                         world_->Phase() == game::World::MatchPhase::kInProgress;
+    sess.died_in_round = -1;
+    if (respawn) {
+        BuildClientSetCameraModeRPC(d, "FirstPerson");
+        BuildClientSetSpectatorModeRPC(d, "FirstPerson");
+    }
     BuildClientRestartRPC(d, 0);
     BuildClientSetCameraModeRPC(d, "FirstPerson");
     BuildClientSetRotationRPC(d, pawn.rotation_pitch, pawn.rotation_yaw, pawn.rotation_roll,
@@ -1579,6 +1677,10 @@ void ProtocolHandler::PossessPawn(uint32_t client_id, ClientSession& sess,
     g.WriteIntMax(rep::AGP_PC::ClientUpdateScoreboard, kPCMaxIndex);
     g.WriteBit(false);
     BuildClientSetBlockOnAsyncLoadingRPC(g);
+    if (respawn) {
+        BuildClientGotoStateRPC(g, "PlayerWalking");
+        BuildClientSetViewTargetRPC(g, kOwnPawnChannel);
+    }
     SendActorUpdateBunch(client_id, kPCChannel, g);
     if (inventory) {
         // Retail's HUD inventory notices (frames 365: EInventoryType 17 = the
@@ -1626,15 +1728,16 @@ void ProtocolHandler::OpenRoundActors(uint32_t client_id, ClientSession& sess) {
 
 uint32_t ProtocolHandler::OpenDataActor(uint32_t client_id, ClientSession& sess,
                                         const game::ServerRoundActor* a) {
-    if (sess.next_free_channel >= 0x800) {
+    const uint32_t ch = AllocChannel(sess);
+    if (ch == 0) {
         LOG_WARN("Client %u: out of channels", client_id);
         return 0;
     }
-    uint32_t ch = sess.next_free_channel++;
     sess.actor_channel[a] = ch;
     sess.channel_max_index[ch] = a->max_index;
     util::BitWriter payload;
-    EncodeRoundActor(payload, *a, sess.round_sent[a], MakeRepContext(sess, ch, /*for_owner=*/true));
+    const bool owner = !a->owner || a->owner == sess.possessed_pawn;
+    EncodeRoundActor(payload, *a, sess.round_sent[a], MakeRepContext(sess, ch, owner));
     OpenActorChannel(client_id, ch, a->object_index, &payload, a->transient ? a : nullptr);
     sess.data_actors.push_back(a);
     return ch;
@@ -1910,9 +2013,8 @@ void ProtocolHandler::OpenInitialActorChannels(uint32_t client_id) {
         // Retail opens the player's whole MOS set together (same empty
         // payload); Combat Medic is what lets the client treat (sec 39.7).
         for (const game::ServerMOSQualificationBCT* q : pc->extra_mos_quals)
-            if (sess.next_free_channel < 0x800)
-                open_for_actor(sess.next_free_channel++, q, "MOSQualification (this client)",
-                               kMOSQualificationBCTMaxIndex);
+            if (const uint32_t ch = AllocChannel(sess))
+                open_for_actor(ch, q, "MOSQualification (this client)", kMOSQualificationBCTMaxIndex);
     }
 
     std::array<util::BitWriter, 4> team_payloads;
@@ -1947,6 +2049,11 @@ void ProtocolHandler::OpenInitialActorChannels(uint32_t client_id) {
     // them right after join, before anyone spawns (frames 85-130; doc sec 31).
     for (const auto& a : world_->MapActors()) OpenDataActor(client_id, sess, a.get());
     for (const auto& a : world_->JoinActors()) OpenDataActor(client_id, sess, a.get());
+    // The carried objective (the briefcase), opened right after its factory
+    // and marker as retail (frames 73-103).
+    for (const auto& a : world_->ObjectiveActors())
+        if (!a->gone) OpenDataActor(client_id, sess, a.get());
+    sess.objectives_opened = true;
     if (world_->Phase() == game::World::MatchPhase::kInProgress) OpenMatchActors(client_id, sess);
     if (pc && pc->pawn) {
         util::BitWriter pawn_payload;
@@ -2036,8 +2143,11 @@ void ProtocolHandler::OpenActorChannel(uint32_t client_id, uint32_t ch_index,
     uint32_t prop_bits = prop_payload ? prop_payload->GetBitCount() : 0;
     uint32_t bunch_data_bits = kObjRefBits + transient_bits + npi_bits + prop_bits;
 
-    // First reliable bunch on this channel = ChSeqRaw 1.
-    uint32_t ch_seq = 1;
+    // The channel index's next reliable sequence: UE3 keeps
+    // InReliable/OutReliable per index for the whole connection, so a
+    // reopened channel carries on from its last close (retail: the
+    // briefcase's ch 15 closed at R2, reopened at R3). 1 the first time.
+    uint32_t ch_seq = sess.channel_reliable_seq[ch_index] + 1;
     WriteBunchHeader(w, ch_index, kActorChType, ch_seq, bunch_data_bits,
                      /*bOpen=*/true);
 
@@ -2253,6 +2363,12 @@ void ProtocolHandler::Tick(uint64_t now_us) {
                 s.vault_sent = own->vault_finish_serial;
                 util::BitWriter d;
                 d.WriteIntMax(100, rep::Pawn::kMaxIndex);   // ClientFinishVaultMantleMoveToTarget()
+                SendActorUpdateBunch(kv.first, kOwnPawnChannel, d);
+            }
+            if (own->ladder_finish_serial != s.ladder_sent && ChannelReady(s, kOwnPawnChannel)) {
+                s.ladder_sent = own->ladder_finish_serial;
+                util::BitWriter d;
+                d.WriteIntMax(102, rep::Pawn::kMaxIndex);   // ClientFinishLadderMoveToTarget()
                 SendActorUpdateBunch(kv.first, kOwnPawnChannel, d);
             }
         }
@@ -2485,6 +2601,76 @@ void ProtocolHandler::Tick(uint64_t now_us) {
                     }
                 }
             }
+            // Loose items on the ground (killed NPCs' rifles).
+            if (world_ && s.objectives_opened)
+                for (const auto& a : world_->WorldItems()) {
+                    const bool open = s.actor_channel.count(a.get()) != 0;
+                    if (!a->gone && !open) { OpenDataActor(kv.first, s, a.get()); sent_update = true; }
+                    else if (a->gone && open) { CloseDataActor(kv.first, s, a.get()); sent_update = true; }
+                }
+            // The carried objective: a pickup closes the briefcase and opens
+            // its owned replacement; a drop opens the dropped case.
+            if (world_ && s.objectives_opened) {
+                for (const auto& a : world_->ObjectiveActors()) {
+                    const bool open = s.actor_channel.count(a.get()) != 0;
+                    if (!a->gone && !open) {
+                        OpenDataActor(kv.first, s, a.get());
+                        sent_update = true;
+                    } else if (a->gone && open) {
+                        CloseDataActor(kv.first, s, a.get());
+                        sent_update = true;
+                    }
+                }
+                // The carrier's notices (retail frames 78426 / 94910).
+                const game::ServerPlayerController* opc = world_->FindPlayerController(kv.first);
+                if (opc && opc->objective_pickup_serial != s.objective_pickup_sent && ChannelReady(s, kPCChannel)) {
+                    s.objective_pickup_sent = opc->objective_pickup_serial;
+                    util::BitWriter d;
+                    d.WriteIntMax(rep::PC::SetNotificationMessage, kPCMaxIndex);
+                    WriteRPCStrParam(d, "Your team has picked up the objective!");
+                    SendActorUpdateBunch(kv.first, kPCChannel, d);
+                    // ReceiveLocalizedMessage(Engine.LocalMessage, , , ,
+                    // OptionalObject = the briefcase's class).
+                    util::BitWriter m;
+                    m.WriteIntMax(rep::PC::ReceiveLocalizedMessage, kPCMaxIndex);
+                    auto static_obj = [&m](uint32_t idx) {
+                        m.WriteBit(idx != 0);
+                        if (idx) { m.WriteBit(0); m.WriteIntMax(idx, 0x80000000); }
+                    };
+                    static_obj(world_->ObjectIndex("Engine", 11866));   // class Engine.LocalMessage
+                    m.WriteBit(0); m.WriteBit(0); m.WriteBit(0);         // Switch, RelatedPRI_1/2
+                    static_obj(world_->ObjectiveItemClassIndex());
+                    SendActorUpdateBunch(kv.first, kPCChannel, m);
+                    sent_update = true;
+                }
+                if (opc && opc->objective_incap_serial != s.objective_incap_sent && ChannelReady(s, kPCChannel)) {
+                    s.objective_incap_sent = opc->objective_incap_serial;
+                    util::BitWriter d;
+                    BuildPCCallRPC(d, rep::PC::ClientNotifyIncapacitatedWithObjective);
+                    SendActorUpdateBunch(kv.first, kPCChannel, d);
+                    sent_update = true;
+                }
+                if (opc && opc->objective_drop_serial != s.objective_drop_sent && ChannelReady(s, kPCChannel)) {
+                    s.objective_drop_sent = opc->objective_drop_serial;
+                    util::BitWriter d;
+                    BuildPCCallRPC(d, rep::PC::ClientSendObjectiveDroppedNotification);
+                    d.WriteIntMax(rep::AGP_PC::ClientNotifyDiscardInventory, kPCMaxIndex);
+                    WriteRPCByteEnumParam(d, 22, 5);                    // the briefcase
+                    SendActorUpdateBunch(kv.first, kPCChannel, d);
+                    sent_update = true;
+                }
+            }
+            // Queued ClientMessages (co-op reinforcement notices).
+            if (world_ && ChannelReady(s, kPCChannel))
+                if (game::ServerPlayerController* mpc = world_->FindPlayerController(kv.first);
+                    mpc && !mpc->pending_messages.empty()) {
+                    util::BitWriter d;
+                    for (const auto& [text, type] : mpc->pending_messages)
+                        BuildClientMessageRPC(d, text, type);
+                    mpc->pending_messages.clear();
+                    SendActorUpdateBunch(kv.first, kPCChannel, d);
+                    sent_update = true;
+                }
             // Round actors: role assignments, and references that weren't
             // mapped yet when the channel opened (doc sec 28).
             if (world_ && !s.data_actors.empty()) {
@@ -2507,8 +2693,9 @@ void ProtocolHandler::Tick(uint64_t now_us) {
                             if (rof != 0) d.WriteBits(static_cast<uint32_t>(rof), 2);
                         }
                     }
+                    const bool owner = !a->owner || a->owner == s.possessed_pawn;
                     if (EncodeRoundActor(d, *a, s.round_sent[a],
-                                         MakeRepContext(s, ch_it->second, /*for_owner=*/true)) > 0 ||
+                                         MakeRepContext(s, ch_it->second, owner)) > 0 ||
                         d.GetBitCount() > 0) {
                         SendActorUpdateBunch(kv.first, ch_it->second, d);
                         sent_update = true;
@@ -2577,7 +2764,7 @@ void ProtocolHandler::RetireOwnPawn(uint32_t client_id, ClientSession& sess) {
 // ClientPawnDied, the camera to FreeCam spectating, the scoreboard hidden,
 // then ClientGotoState('Spectating') (doc sec 36).
 void ProtocolHandler::SendDeathRPCs(uint32_t client_id, ClientSession& sess) {
-    (void)sess;
+    if (world_ && world_->GetGRI()) sess.died_in_round = world_->GetGRI()->i_current_round;
     util::BitWriter d;
     BuildPCCallRPC(d, rep::PC::ClientPawnDied);
     BuildClientSetCameraModeRPC(d, "FirstPerson");
@@ -2593,6 +2780,16 @@ void ProtocolHandler::SendDeathRPCs(uint32_t client_id, ClientSession& sess) {
     SendActorUpdateBunch(client_id, kPCChannel, g);
 }
 
+uint32_t ProtocolHandler::AllocChannel(ClientSession& sess) {
+    constexpr uint64_t kReuseAfterUs = 5'000'000;
+    if (!sess.freed_channels.empty() && NowUs() - sess.freed_channels.front().second >= kReuseAfterUs) {
+        const uint32_t ch = sess.freed_channels.front().first;
+        sess.freed_channels.pop_front();
+        return ch;
+    }
+    return sess.next_free_channel < 0x800 ? sess.next_free_channel++ : 0;
+}
+
 void ProtocolHandler::CloseActorChannel(uint32_t client_id, uint32_t ch_index) {
     auto it = sessions_.find(client_id);
     if (it == sessions_.end()) return;
@@ -2604,8 +2801,8 @@ void ProtocolHandler::CloseActorChannel(uint32_t client_id, uint32_t ch_index) {
                      /*bReliable=*/true, /*bClose=*/true);
     SendBunch(client_id, sess, std::move(w), ch_index, ch_seq);
     sess.channel_max_index.erase(ch_index);
-    sess.channel_reliable_seq.erase(ch_index);
     sess.sent_refs.erase(ch_index);
+    if (ch_index >= 13) sess.freed_channels.push_back({ch_index, NowUs()});
     for (auto a = sess.actor_channel.begin(); a != sess.actor_channel.end();) {
         if (a->second == ch_index) a = sess.actor_channel.erase(a); else ++a;
     }
@@ -2664,13 +2861,14 @@ void ProtocolHandler::SyncRemotePlayers(uint32_t client_id, ClientSession& sess,
             if (!other.second.actor_burst_sent) continue;
             const game::ServerPlayerController* opc = world_->FindPlayerController(other.first);
             if (!opc || !opc->pri) continue;
-            if (sess.next_free_channel + 1 > 0x800) {
+            const uint32_t pri_ch = AllocChannel(sess);
+            if (pri_ch == 0) {
                 LOG_WARN("Client %u: out of actor channels for remote players", client_id);
                 break;
             }
             RemotePlayerChannels rp;
             rp.pri = opc->pri;
-            rp.pri_ch = sess.next_free_channel++;
+            rp.pri_ch = pri_ch;
             util::BitWriter pri_payload;
             RepContext rp_pri_ctx = MakeRepContext(sess, rp.pri_ch, /*for_owner=*/false);
             EncodePRIRep(pri_payload, *rp.pri, nullptr, &rp_pri_ctx);
@@ -2687,9 +2885,10 @@ void ProtocolHandler::SyncRemotePlayers(uint32_t client_id, ClientSession& sess,
             RemotePlayerChannels& rp = kv.second;
             const game::ServerPlayerController* opc = world_->FindPlayerController(kv.first);
             if (rp.pawn || !opc || !opc->pawn || opc->pawn->torn_off || opc->pawn->destroyed) continue;
-            if (sess.next_free_channel >= 0x800) break;
+            const uint32_t pawn_ch = AllocChannel(sess);
+            if (pawn_ch == 0) break;
             rp.pawn = opc->pawn;
-            rp.pawn_ch = sess.next_free_channel++;
+            rp.pawn_ch = pawn_ch;
             util::BitWriter pawn_payload;
             EncodePawnRep(pawn_payload, *rp.pawn, nullptr,
                           MakeRepContext(sess, rp.pawn_ch, /*for_owner=*/false));
@@ -2701,6 +2900,90 @@ void ProtocolHandler::SyncRemotePlayers(uint32_t client_id, ClientSession& sess,
             rp.next_move_us = now_us + kMoveIntervalUs;
             rp.next_keyframe_us = now_us + kKeyframeIntervalUs;
             LOG_INFO("Client %u: opened remote player %u's pawn (ch=%u)", client_id, kv.first, rp.pawn_ch);
+        }
+
+        // 2c) Enemy NPC soldiers (Bridge AI): every live one, pawn only. A
+        // killed one sends its tear-off and closes, as a player's; a level
+        // reset closes the rest.
+        if (sess.actor_burst_sent) {
+            // Relevancy, as retail (249 NPC opens in 22 minutes): an NPC within
+            // 5000 units of this player's soldier opens, past 6000 it closes.
+            constexpr float kOpenRange = 5000.0f, kCloseRange = 6000.0f;
+            if (const game::ServerPawn* own = sess.possessed_pawn; own && !own->destroyed) {
+                for (int k = 0; k < 3; ++k) sess.view_loc[k] = own->location[k];
+                sess.have_view_loc = true;
+            }
+            auto far_from_view = [&](const game::ServerPawn* p, float range) {
+                if (!sess.have_view_loc) return false;
+                const float dx = p->location[0] - sess.view_loc[0], dy = p->location[1] - sess.view_loc[1],
+                            dz = p->location[2] - sess.view_loc[2];
+                return dx * dx + dy * dy + dz * dz > range * range;
+            };
+            for (auto it = sess.npc_channels.begin(); it != sess.npc_channels.end();) {
+                RemotePlayerChannels& np = it->second;
+                if (np.pawn->torn_off && !np.pawn->destroyed && ChannelReady(sess, np.pawn_ch)) {
+                    util::BitWriter d;
+                    if (EncodePawnRep(d, *np.pawn, &np.last_pawn_rest,
+                                      MakeRepContext(sess, np.pawn_ch, /*for_owner=*/false)) > 0)
+                        SendActorUpdateBunch(client_id, np.pawn_ch, d);
+                    np.last_pawn_rest = *np.pawn;
+                }
+                if (np.pawn->torn_off || np.pawn->destroyed || far_from_view(np.pawn, kCloseRange)) {
+                    if (const auto* gear = world_->PawnInventory(np.pawn))
+                        for (const auto& g : *gear) CloseDataActor(client_id, sess, g.get());
+                    CloseActorChannel(client_id, np.pawn_ch);
+                    sess.actor_channel.erase(np.pawn);
+                    it = sess.npc_channels.erase(it);
+                    continue;
+                }
+                ++it;
+            }
+            for (const game::ServerPawn* npc : world_->NpcPawns()) {
+                if (npc->torn_off || sess.npc_channels.count(npc) || far_from_view(npc, kOpenRange)) continue;
+                const uint32_t npc_ch = AllocChannel(sess);
+                if (npc_ch == 0) break;
+                RemotePlayerChannels np;
+                np.pawn = npc;
+                np.pawn_ch = npc_ch;
+                util::BitWriter payload;
+                EncodePawnRep(payload, *npc, nullptr, MakeRepContext(sess, np.pawn_ch, /*for_owner=*/false));
+                OpenActorChannel(client_id, np.pawn_ch, npc->object_index, &payload, npc);
+                sess.channel_max_index[np.pawn_ch] = kNPCEnemyPawnMaxIndex;
+                sess.actor_channel[npc] = np.pawn_ch;
+                // Its gear right after, as retail (frame 11181).
+                if (const auto* gear = world_->PawnInventory(npc))
+                    for (const auto& g : *gear) OpenDataActor(client_id, sess, g.get());
+                np.last_pawn_rest = *npc;
+                np.last_pawn_move = *npc;
+                np.next_move_us = now_us + kMoveIntervalUs;
+                np.next_keyframe_us = now_us + kKeyframeIntervalUs;
+                sess.npc_channels[npc] = np;
+            }
+            for (auto& kv : sess.npc_channels) {
+                RemotePlayerChannels& np = kv.second;
+                util::BitWriter p;
+                RepContext ctx = MakeRepContext(sess, np.pawn_ch, /*for_owner=*/false);
+                ctx.fields = RepContext::Fields::kNoMovement;
+                if (ChannelReady(sess, np.pawn_ch) && EncodePawnRep(p, *np.pawn, &np.last_pawn_rest, ctx) > 0) {
+                    SendActorUpdateBunch(client_id, np.pawn_ch, p);
+                    np.last_pawn_rest = *np.pawn;
+                }
+            }
+            // This player neutralized one (retail 13:42:54).
+            const game::ServerPlayerController* kpc = world_->FindPlayerController(client_id);
+            if (kpc && kpc->npc_kill_serial != sess.npc_kill_sent && ChannelReady(sess, kPCChannel)) {
+                sess.npc_kill_sent = kpc->npc_kill_serial;
+                util::BitWriter d;
+                d.WriteIntMax(rep::PC::ClientNotifyNeutralizedNME, kPCMaxIndex);
+                WriteRPCStrParam(d, kpc->last_npc_kill);         // sOtherPlayer
+                WriteRPCBoolParam(d, false);                    // bKilledPlayer
+                d.WriteIntMax(rep::PC::ClientNotifyScoringEventDetails, kPCMaxIndex);
+                for (int32_t v : {7, 0, 0, 32, 10}) {           // rule, assist, bonus, fields, +10
+                    d.WriteBit(v != 0);
+                    if (v != 0) d.WriteInt(static_cast<uint32_t>(v));
+                }
+                SendActorUpdateBunch(client_id, kPCChannel, d);
+            }
         }
 
         // 3) Reliable diffs: PRI (name/score/ping...) and the pawn's
@@ -2727,7 +3010,23 @@ void ProtocolHandler::SyncRemotePlayers(uint32_t client_id, ClientSession& sess,
         return;
     }
 
-    // 4) Movement: unreliable, 20Hz, keyframe every 1s.
+    // 4) Movement: unreliable, 20Hz, keyframe every 1s (players and NPCs).
+    for (auto& kv : sess.npc_channels) {
+        auto& np = kv.second;
+        if (now_us < np.next_move_us) continue;
+        np.next_move_us = now_us + kMoveIntervalUs;
+        RepContext ctx = MakeRepContext(sess, np.pawn_ch, /*for_owner=*/false);
+        ctx.fields = RepContext::Fields::kMovementOnly;
+        if (now_us >= np.next_keyframe_us) {
+            ctx.force_movement = true;
+            np.next_keyframe_us = now_us + kKeyframeIntervalUs;
+        }
+        util::BitWriter m;
+        if (EncodePawnRep(m, *np.pawn, &np.last_pawn_move, ctx) > 0) {
+            SendActorUpdateBunch(client_id, np.pawn_ch, m, /*reliable=*/false);
+            np.last_pawn_move = *np.pawn;
+        }
+    }
     for (auto& kv : sess.remote_players) {
         auto& rp = kv.second;
         if (!rp.pawn || now_us < rp.next_move_us) continue;
