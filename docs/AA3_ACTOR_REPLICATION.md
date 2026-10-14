@@ -3700,7 +3700,7 @@ about 6 degrees of spread, and spawn on the floor under their marker.
   location.
 - **Dropped rifles.** A killed NPC drops `AA_DroppedPickup_Obran{KNP,MSP,LMK}`
   (CDO 7130/7134/7132, MaxIndex 30), as retail's frame 12295 shows. It opens
-  falling, with Rotation, Velocity, ReplicatedCollisionType 3, bBlockActors,
+  falling, with Rotation, Velocity, ReplicatedCollisionType 3 (4 bits; see 40.8), bBlockActors,
   InventoryClass, Mesh (retail's bits), InventoryTeam (TeamInfo 4) and
   `LoadedMagazines[0]` = {ammo class, 30 (LMK: 200), round index}. After
   0.12 s it rests on the floor (Physics None), and it closes after 120 s
@@ -3723,3 +3723,148 @@ about 6 degrees of spread, and spawn on the floor under their marker.
   A refused move gets an unreliable `ClientAdjustPosition` back to the last
   good spot, at most every 0.2 s. Scripted protocol tests that place their
   soldiers by teleporting set `MovementChecks = 0`.
+
+### 40.8 Retail's enemy AI, downed enemies, mid-round roles (2026-10-12)
+
+**Client crash on killing an NPC.** The dropped rifle (40.7) and the dropped
+briefcase sent `Actor.ReplicatedCollisionType` in 3 bits; `ECollisionType`
+is 4 (retail frame 12295: 146 -> 155 is a 5-bit header plus 4). Every field
+after it was shifted one bit, so the client read `bBlockActors` as
+`DrawScale` and filled `LoadedMagazines` with huge values. The client logs
+showed a General Protection Fault (20:57) and "Ran out of virtual memory"
+(21:02), each right after the kill was scored. Both drops now decode bit
+for bit like retail's. A kill's notice now matches retail's order too:
+`ClientNotifyNeutralizedNME` first, `ClientNotifyScoringEventDetails` in a
+bunch of its own 0.2 s later. On death, the NPC's weapon slots and dump
+pouch close, its body stays 60 s and its rifle drops.
+
+**Retail's enemy AI** (`AA_NPCBaseSoldierController` /
+`AA_NPCBaseSoldierBaseThinking`; values from the package defaults).
+
+What the map gives each NPC:
+- *Start.* Every Bridge AI start has `bManFiringPositionsOnly` and its own
+  `aanpcfpFiringPositions` (NavReference array: Actor + Guid, 20 bytes
+  each). Retail then allows only these states:
+  - ScanForTargets;
+  - ChangeFiringPosition, among its own positions;
+  - TargetingNewEnemy and HidingInCover;
+  - ReloadingWeapon and WeaponJam;
+  - the grenade throws, Flashbanged, incapacitated, dead.
+
+  Patrols, running to cover, chasing and securing are refused. Starts
+  without it (Airfield) choose the nearest firing position near home.
+- *Firing positions.* Each `AA_NPCFiringLocationPathNode` has its yaw,
+  `bCanShootStanding/Crouched/Prone`, `bCanThrowGrenades` and 16 cover
+  directions (one per 4096 of yaw). The baker now extracts these, with the
+  starts' `iMaxSightDistance`, `bSpawnRandomPatrolLocation`, temperament and
+  the map's `WorldInfo.fpAIFogDistance` (Bridge night 2500, RanchAI 3200).
+
+Senses:
+- *Sight.* Range is 19200; 20% of NPCs see 60% of that and 40% see 80%.
+  Nothing past the fog. Each look uses one of four peripheral cones
+  (cos 0.78 / 0.698 / 0.5235 / 0.349). Retail's posture and range rules hide
+  crouched or prone soldiers who keep still far away. Smoke clouds (M83,
+  M106, U72; radius 300 for 45 s) block sight.
+- *Hearing.* A player's rifle is heard within 18000 (`iMaxHearDistance` 450
+  × 40). An NPC that isn't fighting turns toward the shot and scans.
+
+Targets, contact and fire:
+- *Choosing a target.* `EvaluateNewPawn`, including retail's distance term,
+  which grows with distance.
+- *Contact.* `AA_NPCCombatManager.NotifyEnemyContact` gives an order to each
+  NPC within 12000 with health ≥ 80 and no order in 30 s. It attacks if it
+  sees the enemy; otherwise it heads there, which positions-only NPCs
+  refuse.
+- *Firing.* Rifles fire semi-auto bursts of 1-3 rounds (the MSP fires 1),
+  0.1 s apart, with 0.25-0.5 s after each burst. Then 50% crouch, and if the
+  enemy is out of sight they wait 3-13 s; otherwise 0.25-1.25 s. The LMK
+  fires auto for 0.15-1.15 s, then pauses 1-1.75 s. Retail's capture
+  matches: bursts 0.1 s apart, 0.8-2.4 s between bursts.
+- *Aim.* The target's centre ± 15 across and ± 25 up and down (MSP 10/15),
+  + 5 by `IsAimingAffectedBySuppression`. Then our dispersion, standing in
+  for the rifle's spread: about 5° (wider far off and against moving
+  targets). It's tuned so the mission bot lives about as long per spawn as
+  on retail, ~110 s.
+- *Losing sight.* A frag at the last position once, if past shrapnel range
+  and the position allows grenades. Then `NotifyLostSightOfEnemy`: after
+  2.5 s, brave NPCs would head there (refused); the rest scan. If the enemy
+  is gone at aim time, one more burst at the last position, then scan.
+- *Every 8 s and after 10 s fighting.* `ConsiderChangingFiringPosition`.
+
+Reactions:
+- *Suppression.* A player's round passing within 192 suppresses, at most
+  once per 15 s. Bravery goes to 35 (`iFixedSuppressionBravery`). The NPC
+  goes prone if it wasn't reacting in the last 25 s, else one posture
+  lower, then hides 2.5-4.5 s.
+- *Grenades.*
+  - Frags: 30 s per NPC, then `FRand() >= 0.5` (0.25 just after losing
+    sight), never with a friend in the line. Ours also caps NPC frags at
+    one per 120 s map-wide; retail threw 6 in 22 minutes.
+  - Smoke: U72, from ChangeFiringPosition: 30 s, then `FRand() >= 0.8`.
+  - A player's frag within 650 makes a fighting NPC run about 750 away
+    (`TargetingNewEnemy.RunForCover` bypasses the state rules), then lie
+    prone for 3.5 s.
+  - An M84 in sight within 1000: Flashbanged for 7.5 s.
+- *Reloads.* Prone, or crouched if already crouching; about 3 s (LMK 4 s);
+  magazines are unlimited, as retail's `ForceWeaponLoading`.
+- *Bravery.* Starts at 80 (frightened temperament 60). It rises out of
+  danger and falls in danger (`AdjustMentalState`, every 0.25 s). It only
+  changes what NPCs without the positions-only rule do.
+- *Speed.* Top speed 200, reached over 0.5 s; retail's capture never shows
+  faster.
+
+Our own fix in passing: frag and incendiary damage skipped every pawn
+without a controller, so NPCs never took grenade damage. They do now.
+
+**Downed enemies** (retail ch 262, t=526.26-543.69).
+- *Down.* A headshot still kills outright (bTearOff, Health -15). Other
+  damage to 25 or below incapacitates:
+  - `ClientNotifyNeutralizedNME` to the shooter at once (+10);
+  - Health 25 steady, `IncapacitationType` set, `MovementSpeedModifier` 0.5;
+  - graph 0 {41} and graph 2 {5 -> 67}, then ragdoll at +0.9 s with
+    graph 0 {42 -> 13}.
+
+  The next hit kills it.
+- *Secured.* `AGP_PlayerController.SendEnemyDownRequest(name, interactor)`
+  plus `ServerUse`, within 300, for a downed NPC:
+  - teammates get `TeamMessage(PRI, "X secured Y (wounder : rifle)",
+    'EnemyConfirm')` and `ClientReceiveRequestFriendly(47)`;
+  - everyone gets `ClientRemovePlayerFromScoreboard(name)`;
+  - the securer gets AD_SecuredCount and GA_ZipCuffLabel ('Secured NME',
+    of 50), and `ClientNotifyScoringEventDetails(10, 0, 0, 6, +30)`;
+  - the pawn gets graph 4 {150 -> 83}, `bBodyAlreadyIdentified`, Health 0,
+    `IncapacitationType` None and `bPlayZipTie` (137); it closes 18 s on.
+- *Confirmed.* The same request on a dead body gives commo 46, the secured
+  counts and +30, then AD_ConfirmCount and GA_TNBLabel ('Confirmed NME') and
+  `(9, 0, 0, 6, +15)` (retail 13:28:00 and 13:31:44).
+
+**Changing roles mid-round** (`ServerSelectClassRole_ByIndex`).
+- *When allowed.* Retail refuses a pick only while the deployment countdown
+  runs (`bRoleSwappingDisabled`).
+- *Alive.* A living soldier keeps his kit; the new role's applies at his
+  next spawn.
+- *No pawn yet, not played this round.* He gets
+  `StartCountDownToLateJoin(5)` ("You will automatically volunteer as a
+  reinforcement in 5 seconds") and joins the reinforcement queue 5 s later
+  (`DelayedLateJoinTeamWithClassTimer`).
+- *AskForPawn.* It now re-sends `GivePawn` to a client that has a pawn, as
+  `PlayerController.AskForPawn`.
+
+**Fixes from the first real-client test of the new AI (2026-10-13).**
+- *ACOG blur stayed after lowering the sights.* Retail also tells the
+  sight attachment: `AA_WeaponModSights.ClientNotifySightsUp()` (28) on
+  raise and `ClientNotifySightsDown()` (29) on lower, on its own channel
+  (Bridge AI capture, ACOG ch 154, frames 10602 / 10751). We never sent
+  them, so the client kept the scope's blur.
+- *NPCs vanishing and snapping back.* An NPC's crouch or prone moved its
+  location down but never told the clients its posture. Their copy kept a
+  standing body below the floor, which their physics dropped through the
+  floor until the next update. NPCs now send `bIsCrouched` / `bIsProne` and
+  retail's `bProxyInStandState` (78) / `bProxyInCrouchState` (79) with each
+  change.
+- *Bullet landing points.* The shot's trace started a fixed 31 above the
+  pawn. Fitted to retail's `ImpactRepList` rays (entry point and
+  direction, run back to the shooter's ClientLoc), retail's start is
+  +33 standing and +20 crouched (6 of 6 crouched shots in the user's
+  capture, 2-4 units across). Prone is about +3, from a smaller cluster in
+  the bot capture. Player and NPC shots, and NPC eyes, now use these.

@@ -111,6 +111,7 @@ enum class PcRpc : uint8_t {
     kServerRepExec,
     kServerRequestRespawn,
     kServerDropObjective,
+    kSendEnemyDownRequest,
 };
 
 struct DecodedRpc {

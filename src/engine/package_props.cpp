@@ -92,6 +92,16 @@ void ReadArray(const Package& pkg, const uint8_t* data, size_t size, PropValue& 
             return;
         }
     }
+    // Native NavReference / ActorReference elements (Actor + 16-byte Guid,
+    // e.g. AA_NPCBasePlayerStart.aanpcfpFiringPositions): the references.
+    if (count > 0 && static_cast<size_t>(count) * 20 + 4 == size) {
+        v.kind = PropValue::kIntArray;
+        v.struct_name = "NavReference";
+        v.ints.resize(static_cast<size_t>(count));
+        for (int32_t k = 0; k < count; ++k)
+            std::memcpy(&v.ints[static_cast<size_t>(k)], data + 4 + static_cast<size_t>(k) * 20, 4);
+        return;
+    }
     if (count > 0 && static_cast<size_t>(count) * 4 + 4 == size) {
         v.kind = PropValue::kIntArray;
         v.ints.resize(static_cast<size_t>(count));

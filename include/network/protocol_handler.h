@@ -171,6 +171,9 @@ struct ClientSession {
     // Enemy NPC soldiers open on this connection (pawn only, as retail).
     std::map<const game::ServerPawn*, RemotePlayerChannels> npc_channels;
     uint32_t npc_kill_sent = 0;
+    uint32_t late_join_sent = 0;            // StartCountDownToLateJoin
+    uint64_t secure_seen = 0;               // World::SecureEvents() handled (0: not yet synced)
+    uint64_t npc_score_due_us = 0;          // ClientNotifyScoringEventDetails after a neutralization
     float view_loc[3] = {0, 0, 0};          // this player's last soldier location (NPC relevancy)
     bool have_view_loc = false;
     uint32_t refused_moves = 0;             // moves failing the movement checks

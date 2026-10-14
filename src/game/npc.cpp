@@ -31,15 +31,24 @@ namespace {
 constexpr uint32_t kCdoNPCEnemyPawn = 21100;     // AA3Baseline Default__AA_NPCEnemyPawn
 constexpr int32_t kMaxPlayersAndNPCs = 46;
 constexpr int32_t kNPCBodyTeam = 4;              // retail iBodyTeamIndex
-constexpr float kSightRange = 3000.0f, kEye = 31.0f;
-constexpr float kFovCos = 0.26f;                 // ~75 degrees either side of where it faces
-constexpr float kNearAware = 600.0f;             // all-round awareness this close
-constexpr double kReactionMin = 1.5, kReactionMax = 3.0;   // seconds from spotting to the first shot
-// Retail's first NPC (Bridge AI capture, ch 279) fired 23 rounds in 160 s.
-constexpr double kShotGap = 0.15, kBurstPauseMin = 2.0, kBurstPauseMax = 4.0;
-constexpr int kBurst = 3;
-constexpr double kLookInterval = 0.25;           // how often an NPC re-checks its target
-constexpr float kTurnRate = 32768.0f;            // yaw units per second (180 degrees)
+// An NPC's eye / muzzle above its location, by posture (as players', fitted
+// from retail's shot rays: standing 33, crouched 20, prone 3 above the
+// body; a prone NPC's location is body_drop above that).
+float NpcEye(const ServerPawn& p) { return (p.prone ? 3.0f : p.crouched ? 20.0f : 33.0f) - p.body_drop; }
+// Retail NPCs top out at 200 (Bridge AI capture: 358 velocity samples at 200,
+// none faster), reached over ~0.5 s.
+constexpr float kNpcSpeed = 200.0f, kNpcAccel = 400.0f;
+// An NPC's location above the floor by posture. Retail (Bridge AI capture,
+// two NPCs, every posture change): standing 47, crouched always 10 lower.
+// Lower and the client finds its copy's cylinder in the floor and refuses
+// the update (seen 2026-10-13: crouched NPCs stepping forward and snapping
+// back over and over). Prone keeps the standing location: retail never
+// lowers a prone NPC (bot capture 2026-10-12, 3 of 3), the client's prone
+// pose does, and lowering it too sank the body into the floor (2026-10-13
+// live). Its body (hits, eyes) lies at kProneZ: CollisionHeight_Prone 15
+// plus the 3 standing has over its 44.
+constexpr float kStandZ = 47.0f, kCrouchZ = 37.0f, kProneZ = 18.0f;
+float PostureHeight(int posture) { return posture == 1 ? kCrouchZ : kStandZ; }
 
 // The gear retail opens with each NPC (frame 11181): rifle, magazine, dump
 // pouch and the chest / right-shoulder weapon slots. AA3Baseline NetIndex of
@@ -96,11 +105,11 @@ void World::SpawnNPCs() {
         pawn->label = "NPC:" + pawn->npc_name;
         for (int k = 0; k < 3; ++k) pawn->location[k] = s.loc[k];
         // On the floor, as retail spawns them (the marker sits up to ~50
-        // above it; the pawn's location is ~48 above the floor standing).
+        // above it; the pawn's location is 47 above the floor standing).
         const TraceHit floor = collision_.LineTrace({s.loc[0], s.loc[1], s.loc[2] + 10.0f},
                                                     {s.loc[0], s.loc[1], s.loc[2] - 400.0f},
                                                     CollisionWorld::kBlockPawn);
-        if (floor.hit) pawn->location[2] = floor.location.z + 48.0f;
+        if (floor.hit) pawn->location[2] = floor.location.z + kStandZ;
         pawn->rotation_yaw = s.yaw;
         pawn->body_soldier_name = pawn->npc_name;
         pawn->body_team_index = kNPCBodyTeam;
@@ -108,9 +117,39 @@ void World::SpawnNPCs() {
         pawn->inventory_association = "AA_NPCEnemyPawn_" + std::to_string(i);
         pawn->inventory_association_number = 96;
         NpcBrain brain;
-        brain.home = {pawn->location[0], pawn->location[1], pawn->location[2] - 48.0f};
-        brain.next_patrol_at = clock_ + Rand(15.0, 60.0);
-        brain.next_grenade_at = clock_ + Rand(10.0, 30.0);
+        brain.start = i;
+        // bSpawnRandomPatrolLocation: at one of its firing positions.
+        if (s.random_spawn && !s.fp.empty()) {
+            const int f = s.fp[static_cast<size_t>(std::rand()) % s.fp.size()];
+            if (f >= 0 && static_cast<size_t>(f) < npc_firing_positions_.size()) {
+                const FiringPos& fp = npc_firing_positions_[static_cast<size_t>(f)];
+                const TraceHit ff = collision_.LineTrace({fp.loc[0], fp.loc[1], fp.loc[2] + 10.0f},
+                                                         {fp.loc[0], fp.loc[1], fp.loc[2] - 400.0f},
+                                                         CollisionWorld::kBlockPawn);
+                pawn->location[0] = fp.loc[0];
+                pawn->location[1] = fp.loc[1];
+                pawn->location[2] = (ff.hit ? ff.location.z : fp.loc[2] - 40.0f) + kStandZ;
+                pawn->rotation_yaw = fp.yaw;
+                brain.cur_fp = f;
+            }
+        }
+        brain.floor_z = pawn->location[2] - kStandZ;
+        brain.home = {pawn->location[0], pawn->location[1], brain.floor_z};
+        // Eyesight (AA_NPCBasePlayerStart: at 19200, 20% see 60% of it, 40%
+        // 80%), never past the map's AI fog.
+        float sight = static_cast<float>(s.sight);
+        if (s.sight >= 19200) {
+            const double r = Rand(0, 1);
+            sight *= r < 0.2 ? 0.6f : r < 0.6 ? 0.8f : 1.0f;
+        }
+        if (npc_fog_ > 0.0f) sight = std::min(sight, npc_fog_);
+        brain.sight = sight;
+        brain.bravery = s.frightened ? 60 : 80;
+        brain.lmk = s.weapon == "AA_BulletWeapon_ObranLMK";
+        brain.marksman = s.weapon == "AA_BulletWeapon_ObranMSP";
+        brain.mag_size = brain.rounds = brain.lmk ? 100 : 30;
+        brain.scan_base = pawn->rotation_yaw;
+        brain.shift_at = clock_ + Rand(15.0, 30.0);
         npc_brains_[pawn.get()] = brain;
         GiveNpcGear(*pawn, s.weapon);
         npc_weapon_[pawn.get()] = s.weapon;
@@ -199,7 +238,7 @@ void World::DropNpcWeapon(const ServerPawn& npc) {
     DataValue vel; vel.kind = DataValue::Kind::kVector; vel.v3[2] = 45;
     item->Set(4, -1, vel);                                     // Velocity
     item->Set(19, -1, byte(2, 4));                             // Physics: Falling
-    item->Set(16, -1, byte(3, 3));                             // ReplicatedCollisionType
+    item->Set(16, -1, byte(3, 4));                             // ReplicatedCollisionType (4 bits, retail)
     item->Set(8, -1, DataValue::Bool(true));                   // bBlockActors
     item->Set(24, -1, obj(d->cls));                            // InventoryClass
     DataValue mesh; mesh.kind = DataValue::Kind::kRaw; mesh.s = "111111111111";
@@ -249,7 +288,7 @@ void World::StartNavBuild() {
         hi = {std::max(hi.x, x), std::max(hi.y, y), std::max(hi.z, z)};
     };
     for (const auto& s : npc_starts_) grow(s.loc[0], s.loc[1], s.loc[2]);
-    for (const auto& f : npc_firing_positions_) grow(f[0], f[1], f[2]);
+    for (const auto& f : npc_firing_positions_) grow(f.loc[0], f.loc[1], f.loc[2]);
     lo = {lo.x - 1500.0f, lo.y - 1500.0f, lo.z - 1500.0f};
     hi = {hi.x + 1500.0f, hi.y + 1500.0f, hi.z + 1500.0f};
     std::vector<uint32_t> doors;
@@ -266,20 +305,55 @@ void World::StartNavBuild() {
 
 bool World::NpcRoute(ServerPawn& npc, NpcBrain& b, const Vec3& to, float speed) {
     if (!nav_ready_.load(std::memory_order_acquire)) return false;
-    const Vec3 from{npc.location[0], npc.location[1], npc.location[2] - 48.0f};
+    const Vec3 from{npc.location[0], npc.location[1], b.floor_z};
     auto path = navgrid_->FindPath(from, to);
     if (path.size() < 2 || path.size() > 200) return false;   // no route, or too far to bother
+    // String-pull the grid's 8-way steps into straight legs (a clear line at
+    // knee and chest height, no big height change), so the walk -- and the
+    // velocity the clients follow -- doesn't zigzag.
+    std::vector<Vec3> smooth{path.front()};
+    size_t i = 0;
+    while (i + 1 < path.size()) {
+        size_t j = std::min(path.size() - 1, i + 12);
+        for (; j > i + 1; --j) {
+            const Vec3& a = path[i];
+            const Vec3& c = path[j];
+            if (std::fabs(c.z - a.z) > 24.0f) continue;
+            bool clear = true;
+            // centre line and both sides of the body (radius 22), so a leg
+            // never takes the cylinder through a corner the client would
+            // stop it at
+            const float lx = c.x - a.x, ly = c.y - a.y, ll = std::max(1.0f, std::hypot(lx, ly));
+            const float ox = -ly / ll * 22.0f, oy = lx / ll * 22.0f;
+            for (float h : {30.0f, 70.0f})
+                for (float side : {0.0f, -1.0f, 1.0f})
+                    if (clear && collision_.LineTrace({a.x + ox * side, a.y + oy * side, a.z + h},
+                                                      {c.x + ox * side, c.y + oy * side, c.z + h},
+                                                      CollisionWorld::kBlockPawn).hit)
+                        clear = false;
+            // and no drop along the way
+            for (int k = 1; clear && k < 4; ++k) {
+                const float t = k / 4.0f;
+                const Vec3 m{a.x + (c.x - a.x) * t, a.y + (c.y - a.y) * t, a.z + (c.z - a.z) * t};
+                if (!collision_.LineTrace({m.x, m.y, m.z + 30.0f}, {m.x, m.y, m.z - 40.0f}, CollisionWorld::kBlockPawn).hit)
+                    clear = false;
+            }
+            if (clear) break;
+        }
+        smooth.push_back(path[j]);
+        i = j;
+    }
+    path = std::move(smooth);
     b.path = std::move(path);
     b.path_i = 1;
     b.speed = speed;
-    if (npc.crouched) {
-        ApplyPawnAction(&npc, PawnAction::kStand);
-        npc.location[2] += 14.0f;
-    }
+    b.cur_speed = 0.0f;
+    npc.SetGraph(2, 7, 7);                         // walking (retail graph 2 {7})
+    NpcPosture(npc, b, 0);
     return true;
 }
 
-// One step along the route: location on the floor + 48, velocity and
+// One step along the route: location on the floor + 47, velocity and
 // facing replicated as for any soldier.
 void World::NpcMove(ServerPawn& npc, NpcBrain& b, double dt) {
     if (b.path_i >= b.path.size()) {
@@ -289,22 +363,54 @@ void World::NpcMove(ServerPawn& npc, NpcBrain& b, double dt) {
         }
         return;
     }
-    const Vec3& p = b.path[b.path_i];
+    // The real floor under a point: the walk grid's heights are coarse (a
+    // route point stood 14 above the floor at a Bridge start), and a client
+    // refuses to put its copy of the pawn partly inside the floor -- it then
+    // runs the pawn on its velocity alone and snaps it back to the last
+    // spot it accepted (seen 2026-10-13: every walking NPC).
+    // The client rests the cylinder on the highest floor under any part of
+    // it (a stair edge under one side lifts the whole body), so sample the
+    // rim too. Start no higher than a step (35): from 60 up the trace landed
+    // on rails and crates and popped the NPC 59 into the air.
+    auto floor_at = [&](float x, float y, float near_z) {
+        constexpr float kStep = 35.0f, kRim = 20.0f;
+        float best = -1e9f;
+        for (int k = 0; k < 9; ++k) {
+            const float a = k * 0.785398f;
+            const float sx = k == 8 ? x : x + std::cos(a) * kRim, sy = k == 8 ? y : y + std::sin(a) * kRim;
+            const TraceHit h = collision_.LineTrace({sx, sy, near_z + kStep}, {sx, sy, near_z - 120.0f}, CollisionWorld::kBlockPawn);
+            // a hit right at the start is the trace beginning inside a wall
+            if (h.hit && h.location.z < near_z + kStep - 1.0f) best = std::max(best, h.location.z);
+        }
+        return best > -1e8f ? best : near_z;
+    };
+    const Vec3 p = b.path[b.path_i];   // a copy: arriving clears the path
     const float dx = p.x - npc.location[0], dy = p.y - npc.location[1];
     const float d = std::sqrt(dx * dx + dy * dy);
-    const float step = b.speed * static_cast<float>(dt);
+    b.cur_speed = std::min(b.speed, b.cur_speed + kNpcAccel * static_cast<float>(dt));
+    const float step = b.cur_speed * static_cast<float>(dt);
     if (d <= step) {
-        npc.location[0] = p.x; npc.location[1] = p.y; npc.location[2] = p.z + 48.0f;
-        ++b.path_i;
-        return;
+        npc.location[0] = p.x; npc.location[1] = p.y;
+        // Arrived: stop now. Callers stop calling once the route is done,
+        // and a walking velocity left behind made every client walk its
+        // copy on, to be pulled back by each 1 s keyframe (2026-10-13 live:
+        // NPCs at firing positions stepping off and snapping back).
+        if (++b.path_i >= b.path.size()) {
+            b.path.clear();
+            b.path_i = 0;
+            npc.velocity[0] = npc.velocity[1] = npc.velocity[2] = 0.0f;
+        }
+    } else {
+        npc.location[0] += dx / d * step;
+        npc.location[1] += dy / d * step;
+        npc.velocity[0] = dx / d * b.cur_speed;
+        npc.velocity[1] = dy / d * b.cur_speed;
+        npc.velocity[2] = 0.0f;
+        npc.rotation_yaw = static_cast<int32_t>(std::atan2(dy, dx) * 32768.0 / 3.14159265358979) & 0xFFFF;
     }
-    npc.location[0] += dx / d * step;
-    npc.location[1] += dy / d * step;
-    npc.location[2] = p.z + 48.0f;
-    npc.velocity[0] = dx / d * b.speed;
-    npc.velocity[1] = dy / d * b.speed;
-    npc.velocity[2] = 0.0f;
-    if (!b.target) npc.rotation_yaw = static_cast<int32_t>(std::atan2(dy, dx) * 32768.0 / 3.14159265358979) & 0xFFFF;
+    b.floor_z = floor_at(npc.location[0], npc.location[1], std::max(p.z, b.floor_z));
+    npc.location[2] = b.floor_z + PostureHeight(npc.prone ? 2 : npc.crouched ? 1 : 0);
+    b.turning = false;
 }
 
 // Bullets: the first soldier a segment passes through (cylinders as in
@@ -327,7 +433,8 @@ ServerPawn* World::TracePawns(const Vec3& start, const Vec3& seg, const ServerPa
         const float t = (-b - std::sqrt(disc)) / (2 * a);
         if (t < 0 || t >= *best_t) continue;
         const float z = start.z + seg.z * t;
-        if (z < o.location[2] - hh || z > o.location[2] + hh) continue;
+        const float oz = o.location[2] - o.body_drop;
+        if (z < oz - hh || z > oz + hh) continue;
         *best_t = t;
         victim = &o;
     }
@@ -335,26 +442,299 @@ ServerPawn* World::TracePawns(const Vec3& start, const Vec3& seg, const ServerPa
 }
 
 bool World::NpcCanSee(const ServerPawn& npc, const ServerPawn& target) const {
-    const Vec3 eye{npc.location[0], npc.location[1], npc.location[2] + kEye};
+    const Vec3 eye{npc.location[0], npc.location[1], npc.location[2] + NpcEye(npc)};
     const Vec3 aim{target.location[0], target.location[1], target.location[2] + (target.crouched ? 10.0f : 25.0f)};
-    const float dx = aim.x - eye.x, dy = aim.y - eye.y, dz = aim.z - eye.z;
-    if (dx * dx + dy * dy + dz * dz > kSightRange * kSightRange) return false;
-    const TraceHit hit = collision_.LineTrace(eye, aim, CollisionWorld::kBlockTrace);
-    return !hit.hit;
+    return !collision_.LineTrace(eye, aim, CollisionWorld::kBlockTrace).hit && !NpcSmokeBlocks(eye, aim);
 }
 
-void World::NpcShoot(ServerPawn& npc, const ServerPawn& target) {
-    const Vec3 start{npc.location[0], npc.location[1], npc.location[2] + kEye};
-    Vec3 aim{target.location[0] - start.x, target.location[1] - start.y,
-             target.location[2] + (target.crouched ? 5.0f : 15.0f) - start.z};
+// ----------------------------------------------------------------------------
+// The brain: AA_NPCBaseSoldierController's states and AA_NPCBaseSoldier-
+// BaseThinking, as retail runs them on Bridge AI (doc sec 40.8). Every start
+// there has bManFiringPositionsOnly, which keeps an NPC to ScanForTargets,
+// ChangeFiringPosition (among its own positions), TargetingNewEnemy,
+// HidingInCover, ReloadingWeapon, WeaponJam, the grenade throws and
+// Flashbanged: no patrols, no running to cover, no chasing.
+
+namespace {
+constexpr double kThinkDelay = 0.25;             // AA_NPCBaseController.fpThinkingDelay
+constexpr float kCrackRadius = 192.0f;           // a round this close suppresses
+constexpr float kHearGunfire = 18000.0f;         // iMaxHearDistance (450) * 40 for a player's rifle
+constexpr float kGrenadeReact = 650.0f;          // iMinGrenadeDistanceToReact
+constexpr float kShrapnelRange = 600.0f;         // AA_ThrowProjectile_M67.ShrapnelRange (approx.)
+constexpr float kTargetTurnRate = 40000.0f, kScanTurnRate = 45000.0f;
+int32_t YawTo(float dx, float dy) {
+    return static_cast<int32_t>(std::lround(std::atan2(dy, dx) * 32768.0 / 3.14159265358979)) & 0xFFFF;
+}
+float YawDiff(int32_t from, int32_t to) {
+    return std::fmod(static_cast<float>(to) - static_cast<float>(from) + 98304.0f, 65536.0f) - 32768.0f;
+}
+bool Visible(const ServerPawn& p) { return !p.is_npc && !p.torn_off && !p.destroyed && !p.incapacitated && p.controller; }
+}  // namespace
+
+void World::NpcPosture(ServerPawn& npc, NpcBrain& b, int posture) {
+    const int now = npc.prone ? 2 : npc.crouched ? 1 : 0;
+    if (now == posture) return;
+    // A prone body is about 80 long; across a step, a slope or into a wall
+    // its head or feet go inside the world, so it crouches there instead.
+    if (posture == 2) {
+        constexpr float kHalfBody = 42.0f, kUneven = 18.0f;
+        const float yaw = static_cast<float>(npc.rotation_yaw) * 3.14159265f / 32768.0f;
+        const float fx = std::cos(yaw), fy = std::sin(yaw);
+        for (const float end : {kHalfBody, -kHalfBody}) {
+            const Vec3 mid{npc.location[0], npc.location[1], b.floor_z + 16.0f};
+            const Vec3 tip{mid.x + fx * end, mid.y + fy * end, mid.z};
+            const TraceHit wall = collision_.LineTrace(mid, tip, CollisionWorld::kBlockPawn);
+            const TraceHit h = collision_.LineTrace({tip.x, tip.y, b.floor_z + 35.0f},
+                                                    {tip.x, tip.y, b.floor_z - 40.0f}, CollisionWorld::kBlockPawn);
+            if (wall.hit || !h.hit || std::fabs(h.location.z - b.floor_z) > kUneven) {
+                posture = 1;
+                break;
+            }
+        }
+        if (posture == now) return;
+    }
+    ApplyPawnAction(&npc, posture == 2 ? PawnAction::kProne : posture == 1 ? PawnAction::kCrouch : PawnAction::kStand);
+    npc.location[2] = b.floor_z + PostureHeight(posture);
+    npc.body_drop = posture == 2 ? kStandZ - kProneZ : 0.0f;
+    // The client's copy needs the posture too, as retail states it: crouched
+    // is bIsCrouched plus bProxyInCrouchState; prone is bProxyInProneState
+    // alone, never bIsProne (bot capture 2026-10-12). A crouched body left
+    // standing sat below the floor and the client's physics dropped it
+    // through (2026-10-13: NPCs vanishing and snapping back).
+    npc.b_is_crouched = posture == 1;
+    npc.b_is_prone = false;
+    npc.proxy_in_stand = posture == 0;
+    npc.proxy_in_crouch = posture == 1;
+    npc.proxy_in_prone = posture == 2;
+}
+
+bool World::NpcSmokeBlocks(const Vec3& a, const Vec3& b) const {
+    constexpr float kSmokeRadius = 300.0f;
+    for (const auto& c : smoke_clouds_) {
+        if (clock_ >= c.until) continue;
+        const Vec3 d{b.x - a.x, b.y - a.y, b.z - a.z};
+        const float len2 = d.x * d.x + d.y * d.y + d.z * d.z;
+        float t = len2 > 0 ? ((c.at.x - a.x) * d.x + (c.at.y - a.y) * d.y + (c.at.z - a.z) * d.z) / len2 : 0.0f;
+        t = std::max(0.0f, std::min(1.0f, t));
+        const float px = a.x + d.x * t - c.at.x, py = a.y + d.y * t - c.at.y, pz = a.z + d.z * t - c.at.z;
+        if (px * px + py * py + pz * pz < kSmokeRadius * kSmokeRadius) return true;
+    }
+    return false;
+}
+
+// AA_NPCBaseSoldierController.CanSeePlayer (+ the engine's peripheral
+// vision when `fov`: one of four cones each look, NotifySeePlayer).
+bool World::NpcCanSeePlayer(const ServerPawn& npc, const NpcBrain& b, const ServerPawn& p, bool fov) const {
+    if (!Visible(p)) return false;
+    const float dx = p.location[0] - npc.location[0], dy = p.location[1] - npc.location[1],
+                dz = p.location[2] - npc.location[2];
+    const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (dist > b.sight) return false;
+    if (fov && dist > 1.0f) {
+        static const float kCones[8] = {0.78f, 0.698f, 0.698f, 0.5235f, 0.5235f, 0.349f, 0.349f, 0.349f};
+        const double fy = npc.rotation_yaw * 3.14159265358979 / 32768.0;
+        const float dl = std::sqrt(dx * dx + dy * dy);
+        if (dl > 1.0f && (dx * std::cos(fy) + dy * std::sin(fy)) / dl < kCones[std::rand() % 8]) return false;
+    }
+    const float speed = std::hypot(p.velocity[0], p.velocity[1]);
+    if (dist > 7800.0f && p.crouched && speed < 100.0f &&
+        Rand(0, 1) < std::clamp(1.0f - (dist - 7800.0f) / 15600.0f, 0.02f, 0.93f))
+        return false;
+    if (p.prone && npc.prone && dist >= 1040.0f && !(b.start >= 0 && npc_starts_[static_cast<size_t>(b.start)].only))
+        return false;
+    if (dist > 2600.0f && p.prone && speed < 100.0f &&
+        Rand(0, 1) >= std::clamp(1.0f - (dist - 2600.0f) / 5200.0f, 0.05f, 0.95f))
+        return false;
+    const Vec3 eye{npc.location[0], npc.location[1], npc.location[2] + NpcEye(npc)};
+    const float head = NpcEye(p);
+    const Vec3 at{p.location[0], p.location[1], p.location[2] + head};
+    if (NpcSmokeBlocks(eye, at)) return false;
+    if (!collision_.LineTrace(eye, at, CollisionWorld::kBlockTrace).hit) return true;
+    const Vec3 body{p.location[0], p.location[1], p.location[2] + (p.prone ? 8.0f : 16.0f)};
+    return !collision_.LineTrace(eye, body, CollisionWorld::kBlockTrace).hit;
+}
+
+// AA_NPCBaseSoldierBaseThinking.EvaluateNewPawn, as retail has it (its
+// distance term grows with distance: 1 - (3200 - d) / 3200, then +2.5).
+float World::NpcThreat(const ServerPawn& npc, const NpcBrain&, const ServerPawn& p) const {
+    float t = 0.25f;
+    const float dx = npc.location[0] - p.location[0], dy = npc.location[1] - p.location[1];
+    const float d2 = std::sqrt(dx * dx + dy * dy);
+    const double py = p.rotation_yaw * 3.14159265358979 / 32768.0;
+    if (d2 > 1.0f && (dx * std::cos(py) + dy * std::sin(py)) / d2 > 0.0f) t += 0.5f;   // it faces us
+    if (p.held_grenade) t += 1.0f;
+    else t += 0.5f;                              // (a reload in progress would be -0.5)
+    const float dist = std::sqrt(dx * dx + dy * dy + std::pow(npc.location[2] - p.location[2], 2.0f));
+    const float d = 3200.0f - dist;
+    t += (d < 0 ? 0.10f : 1.0f - d / 3200.0f) + 2.5f;
+    if (p.incapacitated) t -= 2.6f;
+    return t;
+}
+
+void World::NpcEnterScan(ServerPawn& npc, NpcBrain& b) {
+    b.state = NpcState::kScan;
+    b.step = 0;
+    b.wait_until = clock_ + 0.25;
+    b.target = nullptr;
+    const bool only = b.start >= 0 && npc_starts_[static_cast<size_t>(b.start)].only;
+    b.shift_at = clock_ + (only ? Rand(15.0, 30.0) : Rand(5.0, 10.0));
+    b.scan_i = 0;
+    b.next_scan_at = clock_ + 0.5;
+    b.scan_base = b.turning ? b.want_yaw : npc.rotation_yaw;
+    b.entered_targeting_at = clock_;
+}
+
+// ChangeFiringPosition: another of its own positions (bManFiringPositions-
+// Only), else the nearest one near home that sees the enemy.
+bool World::NpcEnterChangeFP(ServerPawn& npc, NpcBrain& b) {
+    if (!nav_ready_.load(std::memory_order_acquire) || npc_firing_positions_.empty()) return false;
+    const NpcStart* st = b.start >= 0 ? &npc_starts_[static_cast<size_t>(b.start)] : nullptr;
+    int dest = -1;
+    if (st && st->only) {
+        if (st->fp.size() <= 1) return false;
+        for (int tries = 0; tries < 8 && dest < 0; ++tries) {
+            const int f = st->fp[static_cast<size_t>(std::rand()) % st->fp.size()];
+            if (f != b.cur_fp) dest = f;
+        }
+    } else {
+        float best = 1e9f;
+        for (size_t i = 0; i < npc_firing_positions_.size(); ++i) {
+            const FiringPos& f = npc_firing_positions_[i];
+            const float d = std::hypot(f.loc[0] - b.home.x, f.loc[1] - b.home.y);
+            if (static_cast<int>(i) == b.cur_fp || d > 1500.0f) continue;
+            float score = d;
+            if (b.target) {
+                const Vec3 eye{f.loc[0], f.loc[1], f.loc[2] + 40.0f};
+                const Vec3 at{b.target->location[0], b.target->location[1], b.target->location[2]};
+                if (collision_.LineTrace(eye, at, CollisionWorld::kBlockTrace).hit) score += 5000.0f;
+            }
+            score += static_cast<float>(Rand(0, 600));
+            if (score < best) { best = score; dest = static_cast<int>(i); }
+        }
+    }
+    if (dest < 0) return false;
+    b.state = NpcState::kChangeFP;
+    b.step = 0;
+    b.dest_fp = dest;
+    b.wait_until = clock_ + 0.25;
+    b.buzzes_here = 0;
+    b.last_enemy_dist = b.target ? std::hypot(b.target->location[0] - npc.location[0],
+                                              b.target->location[1] - npc.location[1]) : 1e9f;
+    LOG_INFO("NPC %s moves to firing position %d", npc.npc_name.c_str(), dest);
+    return true;
+}
+
+void World::NpcTargetEnemy(ServerPawn& npc, NpcBrain& b, ServerPawn* enemy, bool contact) {
+    if (!enemy || npc.incapacitated) return;
+    switch (b.state) {                           // states that refuse the change
+    case NpcState::kHiding: case NpcState::kReloading: case NpcState::kJam: case NpcState::kThrowing:
+    case NpcState::kFlashbanged: case NpcState::kFleeGrenade:
+        return;
+    case NpcState::kTargeting:
+        if (b.target == enemy) return;
+        break;
+    default: break;
+    }
+    if (b.path_i < b.path.size()) { b.path.clear(); b.path_i = 0; npc.velocity[0] = npc.velocity[1] = 0.0f; }
+    b.target = enemy;
+    b.last_known = {enemy->location[0], enemy->location[1], enemy->location[2]};
+    b.state = NpcState::kTargeting;
+    b.step = 0;
+    b.spotted_at = clock_;
+    b.entered_targeting_at = clock_;
+    b.monitor_at = clock_ + 8.0;
+    b.lost_sight_at = 0.0;
+    // From sighting to the first round: the turn and settle (retail's
+    // FinishRotation + post-spin delay), 1.5-3 s in the retail captures.
+    b.wait_until = clock_ + Rand(1.5, 3.0);
+    LOG_INFO("NPC %s targets %s (%.0f away)", npc.npc_name.c_str(), SoldierName(enemy).c_str(),
+             std::hypot(enemy->location[0] - npc.location[0], enemy->location[1] - npc.location[1]));
+    if (contact) NpcEnemyContact(npc, *enemy);
+}
+
+// AA_NPCCombatManager.NotifyEnemyContact: every healthy NPC within 12000
+// that hasn't had an order for 30 s attacks if it sees the enemy, else heads
+// there (refused by firing-position-only NPCs).
+void World::NpcEnemyContact(ServerPawn& npc, ServerPawn& enemy) {
+    for (auto& [pp, ob] : npc_brains_) {
+        ServerPawn* o = const_cast<ServerPawn*>(pp);
+        if (o == &npc || o->torn_off || o->incapacitated || o->health < 80.0f) continue;
+        if (clock_ - ob.order_at <= 30.0) continue;
+        if (std::hypot(o->location[0] - npc.location[0], o->location[1] - npc.location[1]) >= 12000.0f) continue;
+        if (ob.state != NpcState::kScan && ob.state != NpcState::kChangeFP) continue;
+        ob.order_at = clock_;
+        if (NpcCanSeePlayer(*o, ob, enemy, true)) {
+            NpcTargetEnemy(*o, ob, &enemy, false);
+        } else if (!(ob.start >= 0 && npc_starts_[static_cast<size_t>(ob.start)].only)) {
+            ob.target = &enemy;
+            NpcEnterChangeFP(*o, ob);
+            ob.target = nullptr;
+        }
+    }
+}
+
+// AA_NPCBaseSoldierBaseThinking.WantsToThrowGrenade.
+bool World::NpcWantsGrenade(const ServerPawn& npc, NpcBrain& b, bool smoke, bool just_lost_sight) {
+    if (b.lmk) return false;
+    if (smoke) {
+        if (b.smokes <= 0 || clock_ - b.last_smoke <= 30.0 || Rand(0, 1) < 0.8) return false;
+        if (b.target && NpcCanSee(npc, *b.target) &&
+            std::hypot(b.target->location[0] - npc.location[0], b.target->location[1] - npc.location[1]) < 1800.0f &&
+            b.rounds > 0)
+            return false;
+        b.last_smoke = clock_;
+        return true;
+    }
+    if (b.frags <= 0 || clock_ - b.last_frag <= 30.0 || Rand(0, 1) < (just_lost_sight ? 0.25 : 0.5)) return false;
+    // Ours: one NPC frag per 120 s map-wide -- retail threw 6 in 22 minutes
+    // of the Bridge AI capture, which its per-NPC rules alone overshoot.
+    if (clock_ < next_npc_grenade_at_) return false;
+    // AnyFriendliesBetweenEnemyAndSelf: another NPC near the line.
+    for (const auto& [o, ob] : npc_brains_) {
+        if (o == &npc || o->torn_off) continue;
+        const float ax = b.last_known.x - npc.location[0], ay = b.last_known.y - npc.location[1];
+        const float l2 = ax * ax + ay * ay;
+        if (l2 < 1.0f) continue;
+        const float t = ((o->location[0] - npc.location[0]) * ax + (o->location[1] - npc.location[1]) * ay) / l2;
+        if (t <= 0.0f || t >= 1.0f) continue;
+        if (std::hypot(npc.location[0] + ax * t - o->location[0], npc.location[1] + ay * t - o->location[1]) < 150.0f)
+            return false;
+    }
+    b.last_frag = clock_;
+    next_npc_grenade_at_ = clock_ + 120.0;
+    return true;
+}
+
+void World::NpcBeginThrow(ServerPawn& npc, NpcBrain& b, bool smoke, const Vec3& at) {
+    b.state = NpcState::kThrowing;
+    b.step = 0;
+    b.throw_smoke = smoke;
+    b.throw_at = at;
+    b.wait_until = clock_ + 1.0;                 // the grenade comes to hand
+    if (npc.prone) NpcPosture(npc, b, 1);
+}
+
+// The NPC's round: retail aims at the target's centre plus an error of up
+// to 15 across / 25 up-down (10 / 15 for the MSP marksman rifle; +5 when
+// IsAimingAffectedBySuppression), then the rifle's own dispersion.
+void World::NpcShoot(ServerPawn& npc, NpcBrain& b, const Vec3& at_point) {
+    const Vec3 start{npc.location[0], npc.location[1], npc.location[2] + NpcEye(npc)};
+    float h = b.marksman ? 10.0f : 15.0f, v = b.marksman ? 15.0f : 25.0f;
+    if (clock_ - b.supp_start > 6.0) { h += 5.0f; v += 5.0f; }
+    Vec3 aim{at_point.x + static_cast<float>(Rand(-h, h)) - start.x, at_point.y + static_cast<float>(Rand(-h, h)) - start.y,
+             at_point.z + static_cast<float>(Rand(-v, v)) - start.z};
     const float dist = std::sqrt(aim.x * aim.x + aim.y * aim.y + aim.z * aim.z);
     if (dist < 1.0f) return;
-    // Spread: ~2.5 degrees, wider far off and while the target moves.
-    // A moving target is much harder to hit: walking ~1.8x the spread,
-    // sprinting 3x (retail's NPCs missed a sprinting carrier for a minute).
-    const float speed = std::hypot(target.velocity[0], target.velocity[1]);
-    const float moving = target.sprinting || speed > 250.0f ? 3.0f : speed > 50.0f ? 1.8f : 1.0f;
-    const float spread = 0.10f * moving * (1.0f + dist / 3000.0f);
+    // Dispersion (the rifle's own spread isn't modelled; ours stands in),
+    // tuned so the mission bot lives about as long per spawn as on retail
+    // (~110 s; doc sec 40.8): ~5 degrees, wider far off and against a moving
+    // target (walking ~1.8x, sprinting 3x).
+    float moving = 1.0f;
+    if (b.target) {
+        const float speed = std::hypot(b.target->velocity[0], b.target->velocity[1]);
+        moving = b.target->sprinting || speed > 250.0f ? 3.0f : speed > 50.0f ? 1.8f : 1.0f;
+    }
+    const float spread = 0.175f * moving * (1.0f + dist / 3000.0f);
     Vec3 dir{aim.x / dist + static_cast<float>(Rand(-spread, spread)),
              aim.y / dist + static_cast<float>(Rand(-spread, spread)),
              aim.z / dist + static_cast<float>(Rand(-spread, spread) * 0.6)};
@@ -368,129 +748,476 @@ void World::NpcShoot(ServerPawn& npc, const ServerPawn& target) {
     ServerPawn* victim = TracePawns(start, seg, &npc, /*skip_npcs=*/true, &best_t);
     npc.flash_count = static_cast<uint8_t>(npc.flash_count + 1);
     if (npc.flash_count == 0) npc.flash_count = 1;
+    --b.rounds;
+    // NotifyShootingWeapon: firing steadies it (LMK +8, rifles +2).
+    b.bravery = std::min(100, b.bravery + (b.lmk ? 8 : 2));
     if (victim) {
         const Vec3 at{start.x + seg.x * best_t, start.y + seg.y * best_t, start.z + seg.z * best_t};
         DamagePawn(*victim, &npc, at, dir);
+        if (victim->torn_off || victim->incapacitated) b.bravery = std::min(100, b.bravery + 30);  // NotifyKilledEnemyPlayer
     } else if (hit.hit && hit.owner) {
         HitMapActor(hit.owner - 1);
     }
 }
 
+// AA_NPCBaseThinking.Think: ConsiderSafety, AdjustMentalState,
+// ConsiderNewAction (whose RunForCover a firing-position-only NPC refuses).
+void World::NpcThink(ServerPawn& npc, NpcBrain& b) {
+    bool danger = false;
+    for (const auto& c : controllers_)
+        if (c->pawn && !c->pawn->torn_off && (TeamOf(*c) == 0 || TeamOf(*c) == 1) && b.injured_by[TeamOf(*c)]) danger = true;
+    if (b.danger_end_at >= 0.0 && clock_ >= b.danger_end_at) { b.danger_near = false; b.danger_end_at = -1.0; }
+    if (danger) b.danger_near = true;
+    if (npc.health >= 75.0f) {
+        if (!b.danger_near && b.bravery <= 75) {
+            if (Rand(0, 1) <= 0.6) b.bravery += b.state == NpcState::kHiding || NpcFP(b) ? 2 : 1;
+        } else if (b.bravery > 40 && b.danger_near && Rand(0, 1) <= 0.7) {
+            b.bravery -= 1;
+        }
+    }
+    const bool only = b.start >= 0 && npc_starts_[static_cast<size_t>(b.start)].only;
+    if (!only && b.bravery <= 20 && b.state != NpcState::kChangeFP && b.state != NpcState::kThrowing &&
+        b.state != NpcState::kReloading)
+        NpcEnterChangeFP(npc, b);                // RunForCover
+}
+
 void World::UpdateNPCs(double dt) {
+    smoke_clouds_.erase(std::remove_if(smoke_clouds_.begin(), smoke_clouds_.end(),
+                                       [&](const SmokeCloud& c) { return clock_ >= c.until; }),
+                        smoke_clouds_.end());
     for (auto& up : pawns_) {
         ServerPawn& npc = *up;
+        if (npc.is_npc && (npc.torn_off || npc.zip_tie) && !npc.npc_body_gone && npc.npc_body_until >= 0.0 &&
+            clock_ >= npc.npc_body_until)
+            npc.npc_body_gone = true;
         if (!npc.is_npc || npc.torn_off || npc.destroyed || npc.incapacitated) continue;
-        NpcBrain& b = npc_brains_[&npc];
-        // Pick (or keep) a target: the nearest living player soldier in sight.
-        if (clock_ >= b.next_look_at) {
-            b.next_look_at = clock_ + kLookInterval;
-            ServerPawn* best = nullptr;
-            float best_d = kSightRange * kSightRange;
-            for (auto& op : pawns_) {
-                ServerPawn& p = *op;
-                if (p.is_npc || p.torn_off || p.destroyed || p.incapacitated || !p.controller) continue;
-                const float dx = p.location[0] - npc.location[0], dy = p.location[1] - npc.location[1],
-                            dz = p.location[2] - npc.location[2];
-                const float d = dx * dx + dy * dy + dz * dz;
-                if (d >= best_d) continue;
-                // In view: ahead of it, unless close by.
-                const float dl = std::sqrt(dx * dx + dy * dy);
-                const double fy = npc.rotation_yaw * 3.14159265358979 / 32768.0;
-                if (dl > kNearAware && dl > 1.0f &&
-                    (dx * std::cos(fy) + dy * std::sin(fy)) / dl < kFovCos) continue;
-                if (!NpcCanSee(npc, p)) continue;
-                best = &p;
-                best_d = d;
+        auto it = npc_brains_.find(&npc);
+        if (it == npc_brains_.end()) continue;
+        NpcTick(npc, it->second, dt);
+    }
+}
+
+void World::NpcTick(ServerPawn& npc, NpcBrain& b, double dt) {
+    if (clock_ >= b.think_at) {
+        b.think_at = clock_ + kThinkDelay;
+        NpcThink(npc, b);
+    }
+    // Turning toward want_yaw.
+    if (b.turning) {
+        const float rate = b.state == NpcState::kScan ? kScanTurnRate : kTargetTurnRate;
+        const float diff = YawDiff(npc.rotation_yaw, b.want_yaw);
+        const float step = rate * static_cast<float>(dt);
+        if (std::fabs(diff) <= step) { npc.rotation_yaw = b.want_yaw & 0xFFFF; b.turning = false; }
+        else npc.rotation_yaw = static_cast<int32_t>(std::lround(npc.rotation_yaw + (diff > 0 ? step : -step))) & 0xFFFF;
+    }
+    // Turn to `yaw` (small corrections, under ~2 degrees, are made at once).
+    auto face = [&](int32_t yaw) {
+        b.want_yaw = yaw & 0xFFFF;
+        if (std::fabs(YawDiff(npc.rotation_yaw, b.want_yaw)) < 360.0f) { npc.rotation_yaw = b.want_yaw; b.turning = false; }
+        else b.turning = true;
+    };
+    auto face_point = [&](const Vec3& p) { face(YawTo(p.x - npc.location[0], p.y - npc.location[1])); };
+    // Looking for players (SeePlayer): the most threatening one in view.
+    auto look = [&](bool fov) -> ServerPawn* {
+        ServerPawn* best = nullptr;
+        float best_t = -1e9f;
+        for (auto& op : pawns_) {
+            ServerPawn& p = *op;
+            if (!Visible(p) || !NpcCanSeePlayer(npc, b, p, fov)) continue;
+            const float t = NpcThreat(npc, b, p);
+            if (t > best_t) { best_t = t; best = &p; }
+        }
+        return best;
+    };
+    const bool waiting = clock_ < b.wait_until;
+    switch (b.state) {
+    case NpcState::kScan: {
+        if (clock_ >= b.next_watch_at) {
+            b.next_watch_at = clock_ + kThinkDelay;
+            if (ServerPawn* p = look(true)) { NpcTargetEnemy(npc, b, p); return; }
+        }
+        if (waiting) return;
+        if (b.step == 0) {                       // begin: crouch, then sweep
+            NpcPosture(npc, b, 1);
+            b.step = 1;
+        }
+        if (clock_ >= b.shift_at && NpcEnterChangeFP(npc, b)) return;
+        if (clock_ >= b.shift_at) b.shift_at = clock_ + Rand(15.0, 30.0);
+        if (clock_ >= b.next_scan_at && !b.turning) {
+            // Sweep: eight steps of 2048 to one side and back, the position's
+            // facing as the middle.
+            static const int kSweep[] = {0, 2048, 4096, 6144, 8192, 6144, 4096, 2048, 0, -2048, -4096, -6144,
+                                         -8192, -6144, -4096, -2048};
+            face(b.scan_base + kSweep[b.scan_i % 16]);
+            ++b.scan_i;
+            b.next_scan_at = clock_ + Rand(0.6, 1.4);
+        }
+        return;
+    }
+    case NpcState::kChangeFP: {
+        if (b.step == 0) {
+            if (waiting) return;
+            NpcPosture(npc, b, 1);
+            b.wait_until = clock_ + 0.35;
+            b.step = 1;
+            return;
+        }
+        if (b.step == 1) {
+            if (waiting) return;
+            if (b.target && NpcWantsGrenade(npc, b, true, false)) {
+                NpcBeginThrow(npc, b, true, b.last_known);
+                b.after_hiding = NpcState::kChangeFP;
+                return;
             }
-            if (best != b.target) {
-                b.target = best;
-                if (best) {
-                    b.spotted_at = clock_;
-                    b.next_shot_at = clock_ + Rand(kReactionMin, kReactionMax);
-                    b.burst_left = kBurst;
+            NpcPosture(npc, b, 0);
+            const FiringPos& f = npc_firing_positions_[static_cast<size_t>(b.dest_fp)];
+            if (!NpcRoute(npc, b, {f.loc[0], f.loc[1], f.loc[2]}, kNpcSpeed)) {
+                NpcPosture(npc, b, 1);           // no way there: look around, try again later
+                NpcEnterScan(npc, b);
+                b.wait_until = clock_ + 2.5;
+                return;
+            }
+            b.step = 2;
+            return;
+        }
+        if (b.step == 2) {
+            // WatchForEnemyWhileMovingTimer / SeePlayer on the way.
+            if (clock_ >= b.next_watch_at) {
+                b.next_watch_at = clock_ + 0.5;
+                if (ServerPawn* p = look(true)) {
+                    const float d = std::hypot(p->location[0] - npc.location[0], p->location[1] - npc.location[1]);
+                    if (p != b.target || d < b.last_enemy_dist) { NpcTargetEnemy(npc, b, p); return; }
+                    b.last_enemy_dist = d;
                 }
             }
+            NpcMove(npc, b, dt);
+            if (b.path_i < b.path.size()) return;
+            b.cur_fp = b.dest_fp;
+            const FiringPos& f = npc_firing_positions_[static_cast<size_t>(b.cur_fp)];
+            face(f.yaw);
+            b.wait_until = clock_ + 1.0;
+            b.step = 3;
+            return;
         }
-        // Movement: following a route; a newly spotted soldier sends it to the
-        // nearest firing position (within 700) that sees him; idle, it patrols
-        // to a firing position near home now and then.
-        const bool moving = b.path_i < b.path.size();
-        if (b.target) {
-            b.last_seen_at = clock_;
-            b.last_seen = {b.target->location[0], b.target->location[1], b.target->location[2]};
-            if (clock_ - b.spotted_at < kLookInterval * 1.5 && !moving && nav_ready_.load(std::memory_order_acquire)) {
-                const Vec3 here{npc.location[0], npc.location[1], npc.location[2] - 48.0f};
-                const std::array<float, 3>* best = nullptr;
-                float best_d = 700.0f;
-                for (const auto& f : npc_firing_positions_) {
-                    const float fx = f[0] - here.x, fy = f[1] - here.y;
-                    const float fd = std::sqrt(fx * fx + fy * fy);
-                    if (fd < 60.0f || fd >= best_d || std::fabs(f[2] - here.z) > 200.0f) continue;
-                    const Vec3 eye{f[0], f[1], f[2] + 40.0f};
-                    const Vec3 aim{b.target->location[0], b.target->location[1], b.target->location[2]};
-                    if (collision_.LineTrace(eye, aim, CollisionWorld::kBlockTrace).hit) continue;
-                    best = &f; best_d = fd;
-                }
-                if (best && NpcRoute(npc, b, {(*best)[0], (*best)[1], (*best)[2]}, 300.0f))
-                    b.next_shot_at = std::max(b.next_shot_at, clock_ + best_d / 300.0 + 0.5);
-            }
-        } else if (!moving && clock_ >= b.next_patrol_at && nav_ready_.load(std::memory_order_acquire)) {
-            b.next_patrol_at = clock_ + Rand(25.0, 50.0);
-            std::vector<const std::array<float, 3>*> near;
-            for (const auto& f : npc_firing_positions_)
-                if (std::hypot(f[0] - b.home.x, f[1] - b.home.y) < 1200.0f) near.push_back(&f);
-            if (!near.empty()) {
-                const auto* f = near[static_cast<size_t>(std::rand()) % near.size()];
-                NpcRoute(npc, b, {(*f)[0], (*f)[1], (*f)[2]}, 170.0f);
-            }
-        }
-        // A soldier gone into cover: sometimes a frag where he was (4-15 s
-        // ago, 400-1500 away). Rare, as retail's (6 U23A1 frags in 22 min of
-        // the Bridge AI capture): one map-wide every 30 s, each NPC at most
-        // every 60-120 s, and only a 30% chance when the moment comes.
-        if (!b.target && clock_ >= b.next_grenade_at && clock_ >= next_npc_grenade_at_ &&
-            clock_ - b.last_seen_at > 4.0 && clock_ - b.last_seen_at < 15.0) {
-            const float gd = std::hypot(b.last_seen.x - npc.location[0], b.last_seen.y - npc.location[1]);
-            if (gd > 400.0f && gd < 1500.0f) {
-                b.next_grenade_at = clock_ + Rand(60.0, 120.0);
-                if (std::rand() % 10 < 3) {
-                    NpcThrowFrag(npc, b.last_seen);
-                    next_npc_grenade_at_ = clock_ + 30.0;
-                }
-            }
-        }
-        NpcMove(npc, b, dt);
-        // Fighting from where it stands: crouched (the pawn drops 14, the
-        // difference between standing and crouched collision height).
-        if (b.target && b.path_i >= b.path.size() && !npc.crouched) {
-            ApplyPawnAction(&npc, PawnAction::kCrouch);
-            npc.location[2] -= 14.0f;
-        }
-        // Hit by someone it can't see: turn toward them (AA_NPC took damage).
-        ServerPawn* face = b.target;
-        if (!face && npc.npc_last_hit_by && clock_ - npc.npc_last_hit_at < 3.0) face = npc.npc_last_hit_by;
-        if (!face) continue;
-        if (face->destroyed || face->torn_off) {
-            if (b.target == face) b.target = nullptr;
-            npc.npc_last_hit_by = nullptr;
-            continue;
-        }
-        // Turn toward it.
-        const float want = static_cast<float>(std::atan2(face->location[1] - npc.location[1],
-                                                         face->location[0] - npc.location[0]) * 32768.0 / 3.14159265358979);
-        float diff = std::fmod(want - static_cast<float>(npc.rotation_yaw) + 98304.0f, 65536.0f) - 32768.0f;
-        const float step = kTurnRate * static_cast<float>(dt);
-        diff = std::max(-step, std::min(step, diff));
-        npc.rotation_yaw = static_cast<int32_t>(std::lround(npc.rotation_yaw + diff)) & 0xFFFF;
-        // Fire: bursts once facing the target and the reaction time is up.
-        if (!b.target || b.path_i < b.path.size() || std::fabs(diff) >= step * 0.99f || clock_ < b.next_shot_at) continue;
-        NpcShoot(npc, *b.target);
-        if (--b.burst_left > 0) {
-            b.next_shot_at = clock_ + kShotGap;
+        if (waiting) return;
+        NpcEnterScan(npc, b);
+        b.scan_base = b.want_yaw;
+        return;
+    }
+    case NpcState::kHiding:
+    case NpcState::kJam:
+        if (waiting) return;
+        if (b.after_hiding == NpcState::kTargeting && b.target && Visible(*b.target)) {
+            b.state = NpcState::kTargeting;
+            b.step = 1;
         } else {
-            b.burst_left = kBurst;
-            b.next_shot_at = clock_ + Rand(kBurstPauseMin, kBurstPauseMax);
+            NpcEnterScan(npc, b);
         }
+        return;
+    case NpcState::kReloading:
+        if (b.step == 0) {
+            if (waiting) return;
+            NpcPosture(npc, b, npc.crouched ? 1 : 2);   // prone unless already crouched
+            b.wait_until = clock_ + 0.5 + (b.lmk ? 4.0 : 3.0);
+            b.step = 1;
+            return;
+        }
+        if (waiting) return;
+        b.rounds = b.mag_size;
+        if (b.target && Visible(*b.target)) { b.state = NpcState::kTargeting; b.step = 1; }
+        else NpcEnterScan(npc, b);
+        return;
+    case NpcState::kThrowing:
+        if (waiting) return;
+        if (b.step == 0) {
+            face_point(b.throw_at);
+            b.step = 1;
+            return;
+        }
+        if (b.step == 1) {
+            if (b.turning) return;
+            NpcThrowFrag(npc, b.throw_at, b.throw_smoke);
+            if (b.throw_smoke) --b.smokes;
+            else { --b.frags; b.bravery = std::min(100, b.bravery + 12); }   // NotifyThrowingFrag
+            b.wait_until = clock_ + 1.2;          // back to the rifle
+            b.step = 2;
+            return;
+        }
+        if (b.after_hiding == NpcState::kChangeFP) {
+            b.after_hiding = NpcState::kScan;
+            NpcPosture(npc, b, 0);
+            const FiringPos& f = npc_firing_positions_[static_cast<size_t>(b.dest_fp)];
+            if (NpcRoute(npc, b, {f.loc[0], f.loc[1], f.loc[2]}, kNpcSpeed)) { b.state = NpcState::kChangeFP; b.step = 2; return; }
+        }
+        NpcEnterScan(npc, b);
+        return;
+    case NpcState::kFlashbanged:
+        if (clock_ < b.flash_until) return;
+        // NotifyFlashBangEnded.
+        b.bravery -= b.bravery > 20 ? 10 : (b.bravery > 1 ? 1 : 0);
+        NpcEnterScan(npc, b);
+        return;
+    case NpcState::kFleeGrenade:
+        if (b.step == 0) {
+            NpcMove(npc, b, dt);
+            if (b.path_i < b.path.size()) return;
+            NpcPosture(npc, b, 2);
+            b.wait_until = clock_ + 3.5;
+            b.step = 1;
+            return;
+        }
+        if (waiting) return;
+        NpcPosture(npc, b, 1);
+        if (b.target && Visible(*b.target) && NpcCanSeePlayer(npc, b, *b.target, false)) {
+            b.state = NpcState::kTargeting;
+            b.step = 1;
+        } else {
+            NpcEnterScan(npc, b);
+        }
+        return;
+    case NpcState::kTargeting:
+        break;
+    }
+
+    // ---- TargetingNewEnemy ------------------------------------------------
+    ServerPawn* enemy = b.target;
+    if (enemy && (enemy->torn_off || enemy->destroyed)) enemy = b.target = nullptr;
+    const bool in_sight = enemy && Visible(*enemy) && NpcCanSeePlayer(npc, b, *enemy, false);
+    if (in_sight) {
+        b.last_known = {enemy->location[0], enemy->location[1], enemy->location[2]};
+        face_point(b.last_known);
+    }
+    // MonitorForExitTimer (every 8 s).
+    if (clock_ >= b.monitor_at) {
+        b.monitor_at = clock_ + 8.0;
+        if (!in_sight && Rand(0, 1) > 0.5 && NpcEnterChangeFP(npc, b)) return;
+        const bool consider = in_sight ? (b.buzzes_here > 4 || Rand(0, 1) < 0.2) : Rand(0, 1) < 0.05;
+        if (consider && NpcEnterChangeFP(npc, b)) return;
+    }
+    if (b.burst_left > 0) {                      // mid-burst
+        if (clock_ < b.next_shot_at) return;
+        if (b.rounds <= 0) { b.burst_left = 0; }
+        else {
+            NpcShoot(npc, b, b.last_known);
+            if (Rand(0, 1) < 0.003) {            // a stoppage (AA_BulletWeapon malfunction)
+                b.burst_left = 0;
+                b.state = NpcState::kJam;
+                b.after_hiding = NpcState::kTargeting;
+                b.wait_until = clock_ + Rand(3.0, 6.0);
+                return;
+            }
+            if (--b.burst_left > 0) { b.next_shot_at = clock_ + (b.lmk ? 0.09 : 0.1); return; }
+        }
+        // After the burst (retail: 0.25-0.5 s; the LMK 1-1.75 s).
+        b.wait_until = clock_ + (b.lmk ? Rand(1.0, 1.75) : Rand(0.25, 0.5));
+        b.step = 2;
+        return;
+    }
+    if (waiting || b.turning) return;
+    if (b.step == 2) {
+        // Lost sight: once, a frag at where it was (if beyond shrapnel range
+        // and this position allows grenades), then NotifyLostSightOfEnemy.
+        if (!in_sight) {
+            if (b.lost_sight_at == 0.0) {
+                b.lost_sight_at = clock_;
+                const float d = std::hypot(b.last_known.x - npc.location[0], b.last_known.y - npc.location[1]);
+                const FiringPos* fp = NpcFP(b);
+                if (d > kShrapnelRange && NpcWantsGrenade(npc, b, false, true) && (!fp || (fp->flags & 8))) {
+                    NpcBeginThrow(npc, b, false, b.last_known);
+                    return;
+                }
+            } else if (clock_ - b.lost_sight_at > 2.5) {
+                // Brave ones head for the last position -- refused when it
+                // only mans firing positions -- the rest scan.
+                if (Rand(0, 1) >= b.bravery / 100.0) { NpcEnterScan(npc, b); return; }
+            }
+        } else {
+            b.lost_sight_at = 0.0;
+        }
+        if (enemy && !enemy->incapacitated) {
+            if (Rand(0, 1) > 0.5) {
+                if (!npc.crouched && !npc.prone) {
+                    NpcPosture(npc, b, 1);
+                    if (!in_sight) b.wait_until = clock_ + Rand(3.0, 13.0);   // DetermineDelayBetweenBursts
+                }
+            } else {
+                b.wait_until = clock_ + Rand(0.25, 1.25);
+            }
+            b.step = 1;
+            return;
+        }
+        NpcEnterScan(npc, b);                    // enemy down: SecureEnemy is refused; scan
+        return;
+    }
+    // ShootAgain.
+    const double in_state = clock_ - b.entered_targeting_at;
+    if (in_state > 3.0 && !npc.crouched && !npc.prone) {
+        const FiringPos* fp = NpcFP(b);
+        if (fp && !(fp->flags & 6)) {            // can only shoot standing here: duck, then up again
+            NpcPosture(npc, b, 1);
+            b.wait_until = clock_ + Rand(2.0, 3.75);
+            b.step = 3;
+            return;
+        }
+        if (!fp) NpcPosture(npc, b, 1);
+    }
+    if (b.step == 3) NpcPosture(npc, b, 0);
+    if (in_state > 10.0) {
+        b.entered_targeting_at = clock_ - 3.0;
+        const bool consider = in_sight ? (b.buzzes_here > 4 || Rand(0, 1) < 0.2) : Rand(0, 1) < 0.05;
+        if (consider) {
+            NpcPosture(npc, b, 1);
+            if (NpcEnterChangeFP(npc, b)) return;
+        }
+    }
+    // AimAtTarget: gone from sight -> maybe a frag; one more burst at where
+    // it was; then back to scanning.
+    bool final_burst = false;
+    if (!in_sight) {
+        if (enemy && enemy->incapacitated) { NpcEnterScan(npc, b); return; }
+        if (b.lost_sight_at == 0.0) b.lost_sight_at = clock_;
+        if (NpcWantsGrenade(npc, b, false, false)) { NpcBeginThrow(npc, b, false, b.last_known); return; }
+        final_burst = true;
+        b.target = nullptr;
+    }
+    if (b.rounds <= 0) {                         // NotifyNeedToReload
+        b.state = NpcState::kReloading;
+        b.step = 0;
+        b.wait_until = clock_ + 0.25;
+        return;
+    }
+    // IsSafeToFireAtEnemy: another NPC in the way?
+    if (enemy && !final_burst) {
+        const Vec3 eye{npc.location[0], npc.location[1], npc.location[2] + NpcEye(npc)};
+        const Vec3 seg{enemy->location[0] - eye.x, enemy->location[1] - eye.y, enemy->location[2] + 10.0f - eye.z};
+        float t = 1.0f;
+        if (ServerPawn* blocker = TracePawns(eye, seg, &npc, false, &t); blocker && blocker->is_npc) {
+            if (Rand(0, 1) > 0.5) { b.wait_until = clock_ + 0.25; return; }
+            if (NpcEnterChangeFP(npc, b)) return;
+            b.wait_until = clock_ + 0.25;
+            return;
+        }
+    }
+    face_point(b.last_known);
+    if (b.turning) return;
+    if (b.lmk) b.burst_left = std::max(2, static_cast<int>((0.15 + Rand(0, 1)) / 0.09));
+    else b.burst_left = b.marksman ? 1 : 1 + std::rand() % 3;
+    b.burst_left = std::min(b.burst_left, b.rounds);
+    b.next_shot_at = clock_;
+    if (final_burst) b.step = 2;
+}
+
+// A player's shot: NPCs it passes close to are suppressed
+// (SuppressedByFire); every NPC within earshot hears it (HeardNoise: turn
+// toward it and scan, unless already fighting).
+void World::NpcBulletNear(ServerPawn& shooter, const Vec3& start, const Vec3& end, const ServerPawn* hit) {
+    if (shooter.is_npc) return;
+    const Vec3 d{end.x - start.x, end.y - start.y, end.z - start.z};
+    const float len2 = d.x * d.x + d.y * d.y + d.z * d.z;
+    for (auto& [pp, b] : npc_brains_) {
+        ServerPawn& npc = *const_cast<ServerPawn*>(pp);
+        if (npc.torn_off || npc.incapacitated) continue;
+        const float hx = npc.location[0] - start.x, hy = npc.location[1] - start.y, hz = npc.location[2] - start.z;
+        if (hx * hx + hy * hy + hz * hz < kHearGunfire * kHearGunfire && b.state != NpcState::kTargeting &&
+            b.state != NpcState::kThrowing && b.state != NpcState::kReloading && b.state != NpcState::kHiding &&
+            b.state != NpcState::kFlashbanged && b.state != NpcState::kFleeGrenade) {
+            const int32_t yaw = YawTo(-hx, -hy);
+            if (b.state == NpcState::kScan) {
+                b.scan_base = yaw;
+                b.want_yaw = yaw; b.turning = true;
+            } else if (b.state == NpcState::kChangeFP && b.step < 2) {
+                NpcEnterScan(npc, b);
+                b.scan_base = yaw; b.want_yaw = yaw; b.turning = true;
+            }
+        }
+        if (&npc == hit || len2 < 1.0f) continue;
+        float t = (hx * d.x + hy * d.y + hz * d.z) / len2;
+        if (t <= 0.0f || t > 1.0f) continue;
+        const float px = start.x + d.x * t - npc.location[0], py = start.y + d.y * t - npc.location[1],
+                    pz = start.z + d.z * t - npc.location[2];
+        if (px * px + py * py + pz * pz < kCrackRadius * kCrackRadius) NpcSuppressed(npc, b, &shooter);
+    }
+}
+
+void World::NpcSuppressed(ServerPawn& npc, NpcBrain& b, ServerPawn* shooter) {
+    if (clock_ - b.last_supp_reaction < 15.0) return;
+    const bool recent = clock_ - b.last_supp_reaction < 25.0;
+    b.last_supp_reaction = clock_;
+    // AA_NPCBaseThinking.SuppressedByFire.
+    b.bravery = 35;
+    b.danger_near = true;
+    b.danger_end_at = clock_ + Rand(1.0, 3.0);
+    b.supp_start = clock_;
+    ++b.buzzes_here;
+    if (b.state == NpcState::kThrowing || b.state == NpcState::kReloading || b.state == NpcState::kFlashbanged ||
+        b.state == NpcState::kFleeGrenade || b.state == NpcState::kHiding)
+        return;
+    if (b.state == NpcState::kChangeFP && b.step == 2) return;      // running: carries on
+    if (b.state == NpcState::kTargeting) {
+        if (!recent && !npc.prone) NpcPosture(npc, b, 2);
+        else if (Rand(0, 1) >= 0.5) NpcPosture(npc, b, npc.crouched || npc.prone ? 2 : 1);
+        b.after_hiding = NpcState::kTargeting;
+    } else {
+        NpcPosture(npc, b, 1);
+        b.after_hiding = NpcState::kScan;
+    }
+    b.burst_left = 0;
+    b.state = NpcState::kHiding;
+    b.wait_until = clock_ + Rand(2.5, 4.5);
+    LOG_INFO("NPC %s suppressed by %s", npc.npc_name.c_str(), SoldierName(shooter).c_str());
+}
+
+// A player's grenade bouncing or landing near: bravery 20; an M67 sends a
+// fighting NPC running (TargetingNewEnemy.RunForCover goes straight to
+// RunningToCover): away to past 650, prone 3.5 s, then crouched.
+void World::NpcGrenadeNear(const Vec3& at, bool frag, const ServerPawn* thrower) {
+    if (thrower && thrower->is_npc) return;
+    for (auto& [pp, b] : npc_brains_) {
+        ServerPawn& npc = *const_cast<ServerPawn*>(pp);
+        if (npc.torn_off || npc.incapacitated) continue;
+        const float dx = npc.location[0] - at.x, dy = npc.location[1] - at.y;
+        const float d = std::hypot(dx, dy);
+        if (d >= kGrenadeReact) continue;
+        b.bravery = 20;
+        b.danger_near = true;
+        b.danger_end_at = clock_ + Rand(1.0, 3.0);
+        const bool only = b.start >= 0 && npc_starts_[static_cast<size_t>(b.start)].only;
+        if (!frag || (only && b.state != NpcState::kTargeting) || b.state == NpcState::kThrowing ||
+            b.state == NpcState::kFleeGrenade || !nav_ready_.load(std::memory_order_acquire))
+            continue;
+        // FindSafeDistanceFromGrenade: a reachable point ~750 away from it.
+        const float ux = d > 1.0f ? dx / d : 1.0f, uy = d > 1.0f ? dy / d : 0.0f;
+        bool routed = false;
+        for (int k = 0; k < 6 && !routed; ++k) {
+            const double a = (k % 2 ? 1 : -1) * (k / 2) * 0.6;
+            const float rx = static_cast<float>(ux * std::cos(a) - uy * std::sin(a));
+            const float ry = static_cast<float>(ux * std::sin(a) + uy * std::cos(a));
+            const Vec3 to{at.x + rx * 750.0f, at.y + ry * 750.0f, b.floor_z};
+            NpcPosture(npc, b, 0);
+            routed = NpcRoute(npc, b, to, kNpcSpeed);
+        }
+        if (!routed) continue;
+        b.grenade_at = at;
+        b.burst_left = 0;
+        b.state = NpcState::kFleeGrenade;
+        b.step = 0;
+    }
+}
+
+void World::NpcSmoke(const Vec3& at, double seconds) { smoke_clouds_.push_back({at, clock_ + seconds}); }
+
+// An M84 going off in sight: Flashbanged for 7.5 s (EndFlashBanged).
+void World::NpcFlashbang(const Vec3& at) {
+    for (auto& [pp, b] : npc_brains_) {
+        ServerPawn& npc = *const_cast<ServerPawn*>(pp);
+        if (npc.torn_off || npc.incapacitated) continue;
+        const Vec3 eye{npc.location[0], npc.location[1], npc.location[2] + NpcEye(npc)};
+        const float d = std::sqrt(std::pow(eye.x - at.x, 2.0f) + std::pow(eye.y - at.y, 2.0f) + std::pow(eye.z - at.z, 2.0f));
+        if (d > 1000.0f || collision_.LineTrace({at.x, at.y, at.z + 10.0f}, eye, CollisionWorld::kBlockTrace).hit) continue;
+        if (b.path_i < b.path.size()) { b.path.clear(); b.path_i = 0; npc.velocity[0] = npc.velocity[1] = 0.0f; }
+        b.burst_left = 0;
+        b.state = NpcState::kFlashbanged;
+        b.flash_until = clock_ + 7.5;
     }
 }
 

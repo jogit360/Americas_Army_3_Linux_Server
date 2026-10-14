@@ -103,6 +103,9 @@ const GrenadeSpec kGrenades[] = {
     // Bridge AI capture, AA_ThrowProjectile_U23A1). Thrown by NpcThrowFrag only.
     {"AA_ThrowWeapon_U23A1",      32883, "AA_ThrowProjectile_U23A1",      5,
      &ServerPlayerReplicationInfo::frag_grenades,       0, 4.0f,  6.0f, Blast::kFrag},
+    // Their smoke (GetSmokeGrenadeClass: U72), timed as the M83.
+    {"AA_ThrowWeapon_U72",        32887, "AA_ThrowProjectile_U72",        3,
+     &ServerPlayerReplicationInfo::smoke_grenades,      1, 1.0f, 20.0f, Blast::kSmoke},
 };
 const GrenadeSpec* GrenadeSpecOf(const std::string& cls) {
     for (const auto& g : kGrenades) if (cls == g.weapon) return &g;
@@ -194,6 +197,22 @@ void World::ApplyRoleKit(ServerPlayerController& pc, std::vector<std::unique_ptr
     pc.pawn->weapon_inv_type = kit->weapon_type;
     pc.pawn->ammo_inv_type = kit->ammo_type;
     if (af) pc.pawn->spare_mags = static_cast<int32_t>(af->v.i);
+    // The magazine list: the loaded one plus the spares, all full (retail
+    // frame 371: eight 30-round entries for the DMR, none in the weapon
+    // until the initial reload loads entry 0).
+    {
+        auto& pri = *pc.pri;
+        pri.primary_mags = {};
+        const int total = std::clamp(pc.pawn->spare_mags + 1, 0, ServerPlayerReplicationInfo::kMaxMagazines);
+        for (int i = 0; i < total; ++i) pri.primary_mags[static_cast<size_t>(i)].rounds = kit->mag_rounds;
+        pri.primary_mag_index = 0;
+        pri.primary_weapon_active = true;
+        pri.mag_class_pkg = "AA3Baseline";
+        pri.mag_class_net = kit->mag_cls;
+        pri.mag_actor = nullptr;
+        for (const auto& it : items)
+            if (it->class_name.rfind("AA_AmmoContainer", 0) == 0) { pri.mag_actor = it.get(); break; }
+    }
     const DataField* sight = weapon ? weapon->Get(kSightType) : nullptr;
     LOG_INFO("Kit for %s: %s, %d magazines, %s; grenades frag %d smoke %d M106 %d stun %d incendiary %d",
              pc.pri->player_name.c_str(), kit->weapon, pc.pawn->spare_mags,
@@ -538,11 +557,11 @@ void World::ThrowGrenade(ServerPawn& pawn, ServerRoundActor& grenade, bool in_ha
              spec->projectile, fuse, in_hand ? " -- cooked off in hand" : "");
 }
 
-// An NPC lobs a frag at `target`: the launch angle that carries the throw
-// speed's arc to the target's distance under the world's gravity (45 degrees
-// when it can't reach), from 31 units above the pawn.
-void World::NpcThrowFrag(ServerPawn& npc, const Vec3& target) {
-    const GrenadeSpec* spec = GrenadeSpecOf("AA_ThrowWeapon_U23A1");
+// An NPC lobs a frag (or smoke) at `target`: the launch angle that carries
+// the throw speed's arc to the target's distance under the world's gravity
+// (45 degrees when it can't reach), from 31 units above the pawn.
+void World::NpcThrowFrag(ServerPawn& npc, const Vec3& target, bool smoke) {
+    const GrenadeSpec* spec = GrenadeSpecOf(smoke ? "AA_ThrowWeapon_U72" : "AA_ThrowWeapon_U23A1");
     if (!spec) return;
     const Vec3 start{npc.location[0], npc.location[1], npc.location[2] + 31.0f};
     const float dx = target.x - start.x, dy = target.y - start.y;
@@ -578,7 +597,8 @@ void World::NpcThrowFrag(ServerPawn& npc, const Vec3& target) {
     t.pos = start;
     t.vel = vel;
     thrown_.push_back(std::move(t));
-    LOG_INFO("%s threw a frag at (%.0f, %.0f, %.0f)", npc.npc_name.c_str(), target.x, target.y, target.z);
+    LOG_INFO("%s threw a %s at (%.0f, %.0f, %.0f)", npc.npc_name.c_str(), smoke ? "smoke" : "frag", target.x, target.y,
+             target.z);
 }
 
 void World::UpdateGrenades(double dt) {
@@ -647,6 +667,10 @@ void World::UpdateGrenades(double dt) {
                 const Vec3 next{g.pos.x + g.vel.x * step, g.pos.y + g.vel.y * step, g.pos.z + g.vel.z * step};
                 TraceHit h = collision_.LineTrace(g.pos, next, CollisionWorld::kBlockTrace);
                 if (!h.hit) { g.pos = next; continue; }
+                if (!g.npcs_told) {                    // NotifyGrenadeBounced to the NPCs near
+                    g.npcs_told = true;
+                    NpcGrenadeNear(h.location, kGrenades[g.spec].blast == Blast::kFrag, g.instigator);
+                }
                 g.pos = {h.location.x + h.normal.x, h.location.y + h.normal.y, h.location.z + h.normal.z};
                 g.vel = {g.vel.x * kRestitution, g.vel.y * kRestitution, g.vel.z * kRestitution};
                 const float vn = g.vel.x * h.normal.x + g.vel.y * h.normal.y + g.vel.z * h.normal.z;
@@ -679,11 +703,13 @@ void World::ExplodeGrenade(ThrownGrenade& g) {
     const GrenadeSpec& spec = kGrenades[g.spec];
     LOG_INFO("%s went off at (%.0f, %.0f, %.0f)", spec.projectile, g.pos.x, g.pos.y, g.pos.z);
     if (spec.blast == Blast::kIncendiary) { g.next_burn = clock_; return; }
+    if (spec.blast == Blast::kSmoke) { NpcSmoke(g.pos, 45.0); return; }
+    if (spec.blast == Blast::kStun) { NpcFlashbang(g.pos); return; }
     if (spec.blast != Blast::kFrag) return;
     const Vec3 origin{g.pos.x, g.pos.y, g.pos.z + 10.0f};
     for (auto& other : pawns_) {
         ServerPawn& v = *other;
-        if (v.torn_off || !v.controller) continue;
+        if (v.torn_off || (!v.controller && !v.is_npc)) continue;   // players and enemy NPCs
         const Vec3 to{v.location[0] - g.pos.x, v.location[1] - g.pos.y, v.location[2] - g.pos.z};
         const float dist = Length(to);
         const size_t n = sizeof(kFragTable) / sizeof(kFragTable[0]);
@@ -707,7 +733,7 @@ void World::ExplodeGrenade(ThrownGrenade& g) {
 void World::BurnAround(ThrownGrenade& g) {
     for (auto& other : pawns_) {
         ServerPawn& v = *other;
-        if (v.torn_off || !v.controller) continue;
+        if (v.torn_off || (!v.controller && !v.is_npc)) continue;
         const Vec3 to{v.location[0] - g.pos.x, v.location[1] - g.pos.y, v.location[2] - g.pos.z};
         const float dist = Length(to);
         if (dist >= kBurnRadius) continue;
@@ -756,6 +782,8 @@ bool World::UseES2Object(ServerPlayerController& pc, const ServerActor* obj) {
         // 30-round magazines for the M4/M16 family, boxes for the M249.
         const bool box = type == 1;
         if ((pawn->ammo_inv_type == 18) == box && pawn->spare_mags < (box ? 4 : 9)) {
+            for (auto& m : pri.primary_mags)
+                if (!m.in_weapon && m.rounds == 0) { m.rounds = pawn->mag_rounds; break; }
             ++pawn->spare_mags;
             ++pawn->mag_count_serial;
             took = true;

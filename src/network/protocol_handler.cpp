@@ -1387,18 +1387,32 @@ void ProtocolHandler::ApplyPcRpc(uint32_t client_id, ClientSession& sess,
                 world_->ApplyPawnAction(pc->pawn, raise ? game::World::PawnAction::kRaiseSights
                                                         : game::World::PawnAction::kLowerSights);
             if (pc) {
-                // Retail (live capture t=33.11/36.97): the posture re-stated,
-                // tactical on while sighted, weapon at high ready.
-                using P = game::ServerPlayerController::Posture;
-                static const char* kEndName[] = {"EndWalk", "EndCrouch", "EndProne", "EndSprint"};
-                static const char* kName[]    = {"Walk", "Crouch", "Prone", "Sprint"};
-                const int cur = static_cast<int>(pc->posture == P::kSprint ? P::kWalk : pc->posture);
-                util::BitWriter d;
-                BuildNotifyPostureChangeRPC(d, kEndName[cur], true);
-                BuildNotifyPostureChangeRPC(d, kName[cur], true);
-                BuildNotifyTacticalCombatPostureChangeRPC(d, raise || pc->tactical_combat);
-                BuildNotifyWeaponReadyChangeRPC(d, true);
-                SendActorUpdateBunch(client_id, kPCChannel, d);
+                // Retail (Bridge AI capture 13:24:15 / 13:24:17, the DMR): a
+                // raise gets nothing on the PC; a lower gets
+                // NotifyWeaponReadyChange(True) then
+                // NotifyTacticalCombatPostureChange(True). Re-stating the
+                // posture as well (EndWalk / Walk) restarted the client's
+                // posture blend and made raising and lowering jerky.
+                if (!raise) {
+                    util::BitWriter d;
+                    BuildNotifyWeaponReadyChangeRPC(d, true);
+                    BuildNotifyTacticalCombatPostureChangeRPC(d, true);
+                    SendActorUpdateBunch(client_id, kPCChannel, d);
+                }
+                // The sight on the rifle is told too (retail Bridge AI capture,
+                // ACOG ch 154 frames 10602/10751): AA_WeaponModSights.
+                // ClientNotifySightsUp() (28) / ClientNotifySightsDown() (29).
+                // Without the Down, the ACOG's scope blur stays on.
+                if (pc->pawn)
+                    if (const auto* gear = world_->PawnInventory(pc->pawn))
+                        for (const auto& g : *gear) {
+                            if (g->gone || g->class_name.find("WeaponModSights") == std::string::npos) continue;
+                            auto it = sess.actor_channel.find(g.get());
+                            if (it == sess.actor_channel.end() || !ChannelReady(sess, it->second)) continue;
+                            util::BitWriter m;
+                            m.WriteIntMax(raise ? 28u : 29u, g->max_index);
+                            SendActorUpdateBunch(client_id, it->second, m);
+                        }
             }
             break;
         }
@@ -1444,6 +1458,7 @@ void ProtocolHandler::ApplyPcRpc(uint32_t client_id, ClientSession& sess,
             if (!pc) break;
             pc->class_role_index = p[0].i;
             bool ok = world_ && world_->AssignRole(*pc, p[0].i);
+            if (ok) world_->MaybeLateJoin(*pc);
             LOG_INFO("RX client %u: ServerSelectClassRole_ByIndex(%d) -> %s", client_id, p[0].i,
                      ok ? "assigned" : "refused");
             // The PRI and the role/fire-team changes go out with the next
@@ -1463,6 +1478,19 @@ void ProtocolHandler::ApplyPcRpc(uint32_t client_id, ClientSession& sess,
         }
         case PcRpc::kServerES2Active:
             break;                                  // the report itself isn't modelled
+        case PcRpc::kServerOffsetAim:
+        case PcRpc::kForceServerOffsetAimUpdate:
+            // AA_PlayerController.ServerOffsetAim: the weapon/muzzle sway,
+            // (Yaw << 16) + (Pitch & 65535). Retail stores it as the pawn's
+            // SwayAimOffset and AimOffset (replicated to the others); shots
+            // go where the sway points (World::TraceShot).
+            if (pc && pc->pawn) pc->pawn->aim_offset = p[0].i;
+            break;
+        case PcRpc::kSendEnemyDownRequest: {
+            const bool ok = pc && world_ && world_->SecureEnemy(*pc, p[0].s);
+            LOG_INFO("RX client %u: SendEnemyDownRequest('%s') -> %s", client_id, p[0].s.c_str(), ok ? "done" : "nothing");
+            break;
+        }
         case PcRpc::kServerDropObjective:
             if (pc && world_ && world_->DropObjectiveByChoice(*pc))
                 LOG_INFO("Client %u: dropped the objective for a teammate", client_id);
@@ -1546,7 +1574,15 @@ void ProtocolHandler::ApplyPcRpc(uint32_t client_id, ClientSession& sess,
             LOG_INFO("RX client %u: level '%s' visible=%d", client_id, p[0].s.c_str(), p[1].i);
             break;
         case PcRpc::kAskForPawn:
+            // PlayerController.AskForPawn: a client that has a pawn gets
+            // GivePawn(Pawn) again (it may have missed the first).
             LOG_INFO("RX client %u: AskForPawn()", client_id);
+            if (pc && pc->pawn && !pc->pawn->torn_off && sess.actor_channel.count(pc->pawn) &&
+                ChannelReady(sess, kPCChannel)) {
+                util::BitWriter g;
+                BuildGivePawnRPC(g, kOwnPawnChannel);
+                SendActorUpdateBunch(client_id, kPCChannel, g);
+            }
             break;
         case PcRpc::kServerReturnToParty:
             LOG_INFO("RX client %u: ServerReturnToParty(bPartyMembersOnly=%d)", client_id, p[0].i);
@@ -2643,6 +2679,15 @@ void ProtocolHandler::Tick(uint64_t now_us) {
                     SendActorUpdateBunch(kv.first, kPCChannel, m);
                     sent_update = true;
                 }
+                if (opc && opc->late_join_serial != s.late_join_sent && ChannelReady(s, kPCChannel)) {
+                    s.late_join_sent = opc->late_join_serial;
+                    util::BitWriter d;
+                    d.WriteIntMax(rep::PC::StartCountDownToLateJoin, kPCMaxIndex);
+                    d.WriteBit(true);                       // iCountDownTime = 5
+                    d.WriteInt(5u);
+                    SendActorUpdateBunch(kv.first, kPCChannel, d);
+                    sent_update = true;
+                }
                 if (opc && opc->objective_incap_serial != s.objective_incap_sent && ChannelReady(s, kPCChannel)) {
                     s.objective_incap_sent = opc->objective_incap_serial;
                     util::BitWriter d;
@@ -2928,7 +2973,12 @@ void ProtocolHandler::SyncRemotePlayers(uint32_t client_id, ClientSession& sess,
                         SendActorUpdateBunch(client_id, np.pawn_ch, d);
                     np.last_pawn_rest = *np.pawn;
                 }
-                if (np.pawn->torn_off || np.pawn->destroyed || far_from_view(np.pawn, kCloseRange)) {
+                // A killed NPC's body stays open (retail ~60 s), minus its
+                // slots and pouch, which close at the death.
+                if (const auto* gear = world_->PawnInventory(np.pawn))
+                    for (const auto& g : *gear)
+                        if (g->gone && sess.actor_channel.count(g.get())) CloseDataActor(client_id, sess, g.get());
+                if (np.pawn->npc_body_gone || np.pawn->destroyed || far_from_view(np.pawn, kCloseRange)) {
                     if (const auto* gear = world_->PawnInventory(np.pawn))
                         for (const auto& g : *gear) CloseDataActor(client_id, sess, g.get());
                     CloseActorChannel(client_id, np.pawn_ch);
@@ -2939,7 +2989,14 @@ void ProtocolHandler::SyncRemotePlayers(uint32_t client_id, ClientSession& sess,
                 ++it;
             }
             for (const game::ServerPawn* npc : world_->NpcPawns()) {
-                if (npc->torn_off || sess.npc_channels.count(npc) || far_from_view(npc, kOpenRange)) continue;
+                // Never reopen a body that's gone: a secured (zip-tied) NPC
+                // isn't torn off, so once its body was cleaned up this loop
+                // reopened what the one above closed, every tick, until the
+                // client fell over under the reliable backlog (2026-10-13
+                // live: two secured NPCs, 8435 unacked, client crash).
+                if (npc->torn_off || npc->npc_body_gone || npc->destroyed || sess.npc_channels.count(npc) ||
+                    far_from_view(npc, kOpenRange))
+                    continue;
                 const uint32_t npc_ch = AllocChannel(sess);
                 if (npc_ch == 0) break;
                 RemotePlayerChannels np;
@@ -2969,6 +3026,68 @@ void ProtocolHandler::SyncRemotePlayers(uint32_t client_id, ClientSession& sess,
                     np.last_pawn_rest = *np.pawn;
                 }
             }
+            // Enemies secured / confirmed (retail 13:28:00, 13:31:39-45).
+            if (ChannelReady(sess, kPCChannel)) {
+                const auto& evs = world_->SecureEvents();
+                if (sess.secure_seen == 0) sess.secure_seen = evs.empty() ? 1 : evs.back().id + 1;
+                const game::ServerPlayerController* me = world_->FindPlayerController(client_id);
+                const int32_t my_team = me ? world_->TeamOf(*me) : -1;
+                for (const auto& ev : evs) {
+                    if (ev.id < sess.secure_seen) continue;
+                    sess.secure_seen = ev.id + 1;
+                    util::BitWriter d;
+                    auto str_int = [&](uint32_t rpc, const std::string& a, int v) {
+                        d.WriteIntMax(rpc, kPCMaxIndex);
+                        WriteRPCStrParam(d, a);
+                        d.WriteBit(v != 0); if (v != 0) d.WriteInt(static_cast<uint32_t>(v));
+                    };
+                    auto progress = [&](const char* field, const char* label, const char* action, int count) {
+                        str_int(rep::PC::ClientNotifyHiddenAchievementProgress, field, count);
+                        d.WriteIntMax(rep::PC::ClientNotifyAchievementProgress, kPCMaxIndex);
+                        WriteRPCStrParam(d, label);
+                        WriteRPCStrParam(d, action);
+                        d.WriteBit(true); d.WriteInt(50u);                   // iMaxRequired
+                        d.WriteBit(count != 0); if (count != 0) d.WriteInt(static_cast<uint32_t>(count));
+                        str_int(rep::PC::ClientNotifyHiddenAchievementProgress, field, count);
+                    };
+                    auto score = [&](int rule, int delta) {
+                        d.WriteIntMax(rep::PC::ClientNotifyScoringEventDetails, kPCMaxIndex);
+                        for (int32_t v : {rule, 0, 0, 6, delta}) {   // rule, assist, bonus, Duty+Respect, delta
+                            d.WriteBit(v != 0);
+                            if (v != 0) d.WriteInt(static_cast<uint32_t>(v));
+                        }
+                    };
+                    if (ev.team == my_team) {
+                        if (ev.alive) {                        // TeamMessage(PRI, S, 'EnemyConfirm')
+                            d.WriteIntMax(rep::PC::TeamMessage, kPCMaxIndex);
+                            const uint32_t pri_ch = ev.by && ev.by->pri && sess.actor_channel.count(ev.by->pri)
+                                                        ? sess.actor_channel[ev.by->pri] : 0;
+                            WriteRPCObjectParam(d, pri_ch);
+                            WriteRPCStrParam(d, ev.message);
+                            WriteRPCNameParam(d, "EnemyConfirm", 0);   // Type
+                            d.WriteBit(false);                 // MsgLifeTime
+                        }
+                        d.WriteIntMax(rep::AGP_PC::ClientReceiveRequestFriendly, kPCMaxIndex);
+                        WriteRPCByteEnumParam(d, ev.alive ? 47 : 46, 6);   // COMMO_ACT_EnemySecured / EnemyDown
+                        WriteRPCBoolParam(d, false);           // bWhisper
+                        d.WriteBit(false);                     // PlayerIndex 0
+                        d.WriteBit(false);                     // Speaker
+                    }
+                    if (ev.alive) {
+                        d.WriteIntMax(rep::PC::ClientRemovePlayerFromScoreboard, kPCMaxIndex);
+                        WriteRPCStrParam(d, ev.npc);
+                    }
+                    if (ev.by == me) {
+                        progress("AD_SecuredCount", "GA_ZipCuffLabel", "Secured NME", ev.secured);
+                        score(10, 30);
+                        if (!ev.alive) {
+                            progress("AD_ConfirmCount", "GA_TNBLabel", "Confirmed NME", ev.confirmed);
+                            score(9, 15);
+                        }
+                    }
+                    if (d.GetBitCount() > 0) SendActorUpdateBunch(client_id, kPCChannel, d);
+                }
+            }
             // This player neutralized one (retail 13:42:54).
             const game::ServerPlayerController* kpc = world_->FindPlayerController(client_id);
             if (kpc && kpc->npc_kill_serial != sess.npc_kill_sent && ChannelReady(sess, kPCChannel)) {
@@ -2977,6 +3096,14 @@ void ProtocolHandler::SyncRemotePlayers(uint32_t client_id, ClientSession& sess,
                 d.WriteIntMax(rep::PC::ClientNotifyNeutralizedNME, kPCMaxIndex);
                 WriteRPCStrParam(d, kpc->last_npc_kill);         // sOtherPlayer
                 WriteRPCBoolParam(d, false);                    // bKilledPlayer
+                SendActorUpdateBunch(client_id, kPCChannel, d);
+                // Retail sends the score in a bunch of its own ~0.2 s later
+                // (frames 12295 / 12313); together, the client crashed.
+                sess.npc_score_due_us = now_us + 200'000;
+            }
+            if (sess.npc_score_due_us && now_us >= sess.npc_score_due_us && ChannelReady(sess, kPCChannel)) {
+                sess.npc_score_due_us = 0;
+                util::BitWriter d;
                 d.WriteIntMax(rep::PC::ClientNotifyScoringEventDetails, kPCMaxIndex);
                 for (int32_t v : {7, 0, 0, 32, 10}) {           // rule, assist, bonus, fields, +10
                     d.WriteBit(v != 0);

@@ -96,6 +96,7 @@ public:
     uint32_t RoundSerial() const { return round_serial_; }
     // ServerSelectClassRole_ByIndex: give the player the role at `role_index`
     // in their team's role list. False if there's no such free slot.
+    void MaybeLateJoin(ServerPlayerController& pc);
     bool AssignRole(ServerPlayerController& pc, int32_t role_index);
     void ReleaseRole(ServerPlayerReplicationInfo& pri);
     // Wire ObjectIndex of an object in `package` (ObjectBase + NetIndex), or 0.
@@ -190,6 +191,7 @@ public:
         double thrown_at = 0.0, explode_at = 0.0, gone_at = 0.0, drop_at = 0.0;
         Vec3 pos, vel;
         bool resting = false, exploded = false, gone = false;
+        bool npcs_told = false;                  // NotifyGrenadeBounced sent to nearby NPCs
         double next_burn = 0.0;
     };
     const std::vector<ThrownGrenade>& ThrownGrenades() const { return thrown_; }
@@ -334,27 +336,94 @@ private:
         double last_used = -100.0;
     };
     std::vector<RespawnMarker> respawn_markers_;
-    struct NpcStart { float loc[3] = {0, 0, 0}; int32_t yaw = 0; std::string weapon; };
+    // AA_NPCEnemyPlayerStart: its own firing positions (indices into
+    // npc_firing_positions_) and, with bManFiringPositionsOnly ("only"),
+    // the states retail keeps it to (doc sec 40.8); iMaxSightDistance;
+    // AA_NPCEnemySoldierFrightenedThinking (bravery 60, else 80).
+    struct NpcStart {
+        float loc[3] = {0, 0, 0}; int32_t yaw = 0; std::string weapon;
+        std::vector<int> fp;
+        bool only = false, random_spawn = false, frightened = false;
+        int32_t sight = 19200;
+    };
+    // AA_NPCFiringLocationPathNode: where, facing, bCanShoot{Standing,
+    // Crouched,Prone} / bCanThrowGrenades (flags 1/2/4/8), and its 16 cover
+    // directions (every 4096 of yaw: 1 cover, 2 must crouch, 4 can stand).
+    struct FiringPos {
+        float loc[3] = {0, 0, 0}; int32_t yaw = 0; int flags = 1;
+        std::array<uint8_t, 16> cover{};
+    };
     std::map<const ServerPawn*, std::string> npc_weapon_;       // each NPC's rifle class
     std::vector<NpcStart> npc_starts_;
-    std::vector<std::array<float, 3>> npc_firing_positions_;
+    std::vector<FiringPos> npc_firing_positions_;
+    float npc_fog_ = 0.0f;                      // WorldInfo.fpAIFogDistance (0: none)
     int32_t npc_max_ = 0;
     bool npcs_enabled_ = true;
     bool movement_checks_ = true;
+    // One NPC's controller + thinking class (AA_NPCBaseSoldierController /
+    // AA_NPCBaseSoldierBaseThinking; doc sec 40.8).
+    enum class NpcState : uint8_t { kScan, kTargeting, kChangeFP, kHiding, kReloading, kJam, kThrowing,
+                                    kFlashbanged, kFleeGrenade };
     struct NpcBrain {
+        NpcState state = NpcState::kScan;
+        double wait_until = 0.0;                // the state's current Sleep()
+        int step = 0;                           // where in the state's script
+        int start = -1;                         // npc_starts_ index
+        int cur_fp = -1, dest_fp = -1;          // firing positions
+        float floor_z = 0.0f;
+        float sight = 2500.0f;                  // iMaxSightDistance (fog applied)
+        // Thinking.
+        int bravery = 80;
+        bool danger_near = false;
+        double danger_end_at = -1.0, think_at = 0.0;
+        bool injured_by[2] = {false, false};
+        // Targeting.
         ServerPawn* target = nullptr;
-        double spotted_at = 0.0, next_shot_at = 0.0, next_look_at = 0.0;
-        int burst_left = 3;
+        Vec3 last_known;
+        double lost_sight_at = 0.0, entered_targeting_at = 0.0, monitor_at = 0.0, spotted_at = 0.0;
+        int burst_left = 0;
+        double next_shot_at = 0.0, burst_end_at = 0.0;
+        int rounds = 30, mag_size = 30;
+        bool lmk = false, marksman = false;
+        double last_supp_reaction = -100.0, supp_start = -100.0;
+        int buzzes_here = 0;
+        double last_frag = -100.0, last_smoke = -100.0;
+        int frags = 3, smokes = 3;
+        bool throw_smoke = false;
+        Vec3 throw_at;
+        NpcState after_hiding = NpcState::kScan;
+        // Scanning and moving.
+        double shift_at = 0.0, next_scan_at = 0.0;
+        int scan_i = 0;
+        int32_t scan_base = 0, want_yaw = 0;
+        bool turning = false;
+        double order_at = -100.0;               // combat manager's last order
+        double flash_until = 0.0;
+        float last_enemy_dist = 1e9f;
+        double next_watch_at = 0.0;
         Vec3 home;                              // its start
+        Vec3 grenade_at;                        // the frag it flees
         std::vector<Vec3> path;                 // floor points to walk
         size_t path_i = 0;
-        float speed = 170.0f;                   // walking; running to cover 300
-        double next_patrol_at = 0.0;
-        double last_seen_at = -100.0;
-        Vec3 last_seen;
-        double next_grenade_at = 0.0;
-        double crouch_until = 0.0;
+        float speed = 200.0f;                   // retail NPCs' top speed
+        float cur_speed = 0.0f;                 // ramping up to it
     };
+    // Smoke (M83 / M106 / U72) clouds: NPCs can't see through them
+    // (AA_NPCCombatManager.DoSmokeGrenadesBlockOurVision).
+    struct SecureEvent {
+        uint64_t id = 0;
+        const ServerPlayerController* by = nullptr;
+        int32_t team = -1;
+        bool alive = false;                     // secured (zip-cuffed) vs. a body confirmed
+        std::string npc, message;
+        int secured = 0, confirmed = 0;         // the player's counts after it
+    };
+    struct SmokeCloud { Vec3 at; double until; };
+    std::vector<SmokeCloud> smoke_clouds_;
+    std::vector<SecureEvent> secure_events_;
+    uint64_t next_secure_id_ = 1;
+    void CreditNpc(ServerPawn& victim, ServerPawn* killer);
+    void StripNpc(ServerPawn& npc);
     // The walkable grid for NPC routes, built in the background at load
     // (a copy of the collision; ~10-20 s); NPCs hold position until ready.
     std::unique_ptr<NavGrid> navgrid_;
@@ -369,13 +438,42 @@ private:
     struct ItemTimer { ServerRoundActor* item; double settle_at, expire_at; };
     std::vector<ItemTimer> item_timers_;
     void DropNpcWeapon(const ServerPawn& npc);
-    void NpcThrowFrag(ServerPawn& npc, const Vec3& target);
+    void NpcThrowFrag(ServerPawn& npc, const Vec3& target, bool smoke = false);
     void UpdateWorldItems();
     void SpawnNPCs();
     void GiveNpcGear(ServerPawn& npc, const std::string& weapon);
     void UpdateNPCs(double dt);
+    void NpcTick(ServerPawn& npc, NpcBrain& b, double dt);
+    void NpcThink(ServerPawn& npc, NpcBrain& b);
+    void NpcPosture(ServerPawn& npc, NpcBrain& b, int posture);     // 0 stand, 1 crouch, 2 prone
+    void NpcEnterScan(ServerPawn& npc, NpcBrain& b);
+    bool NpcEnterChangeFP(ServerPawn& npc, NpcBrain& b);
+    void NpcTargetEnemy(ServerPawn& npc, NpcBrain& b, ServerPawn* enemy, bool contact = true);
+    void NpcEnemyContact(ServerPawn& npc, ServerPawn& enemy);
+    void NpcSuppressed(ServerPawn& npc, NpcBrain& b, ServerPawn* shooter);
+    bool NpcWantsGrenade(const ServerPawn& npc, NpcBrain& b, bool smoke, bool just_lost_sight);
+    void NpcBeginThrow(ServerPawn& npc, NpcBrain& b, bool smoke, const Vec3& at);
+    float NpcThreat(const ServerPawn& npc, const NpcBrain& b, const ServerPawn& p) const;
+    bool NpcCanSeePlayer(const ServerPawn& npc, const NpcBrain& b, const ServerPawn& target, bool fov) const;
+    bool NpcSmokeBlocks(const Vec3& a, const Vec3& b) const;
     bool NpcCanSee(const ServerPawn& npc, const ServerPawn& target) const;
-    void NpcShoot(ServerPawn& npc, const ServerPawn& target);
+    void NpcShoot(ServerPawn& npc, NpcBrain& b, const Vec3& at_point);
+    const FiringPos* NpcFP(const NpcBrain& b) const {
+        return b.cur_fp >= 0 && static_cast<size_t>(b.cur_fp) < npc_firing_positions_.size()
+                   ? &npc_firing_positions_[static_cast<size_t>(b.cur_fp)] : nullptr;
+    }
+public:
+    // Hooks from the players' weapons: a shot's path (suppression and
+    // hearing), a grenade landing near, smoke and a flashbang going off.
+    void NpcBulletNear(ServerPawn& shooter, const Vec3& start, const Vec3& end, const ServerPawn* hit);
+    // AGP_PlayerController.SendEnemyDownRequest -> ServerTryToIdentifyCorpse:
+    // secure a downed enemy or confirm a dead one near the player.
+    bool SecureEnemy(ServerPlayerController& pc, const std::string& name);
+    const std::vector<SecureEvent>& SecureEvents() const { return secure_events_; }
+    void NpcGrenadeNear(const Vec3& at, bool frag, const ServerPawn* thrower);
+    void NpcSmoke(const Vec3& at, double seconds);
+    void NpcFlashbang(const Vec3& at);
+private:
     ServerPawn* TracePawns(const Vec3& start, const Vec3& seg, const ServerPawn* ignore, bool skip_npcs,
                            float* best_t);
     static std::string SoldierName(const ServerPawn* p) {
@@ -431,7 +529,7 @@ private:
     void SettleStanding(ServerPawn& p);
     ServerRoundActor* FindInventory(const ServerPawn* pawn, const ServerActor* a);
     struct ReloadJob { ServerPawn* pawn; const ServerActor* weapon; double start; int stage; bool reloading = false; };
-    struct DeliberateReload { ServerPawn* pawn; double start; int stage; uint8_t rof; };
+    struct DeliberateReload { ServerPawn* pawn; double start; int stage; uint8_t rof; bool empty = false; int chosen = -1; };
     std::vector<DeliberateReload> deliberate_reloads_;
     std::vector<ReloadJob> reloads_;
     double clock_ = 0.0;

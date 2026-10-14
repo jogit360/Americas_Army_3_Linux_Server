@@ -256,6 +256,10 @@ void World::EnterPhase(MatchPhase phase) {
                     ? gri_->mission_time_remaining : game_info_->default_time_limit_seconds;
             gri_->mission_time_limit_seconds = time_limit_seconds_;
             gri_->mission_time_remaining = time_limit_seconds_;
+            // GRI's own clock (TimeLimit in minutes, RemainingTime) follows a
+            // configured limit too, as retail's 7 / 420 follow Bridge's 420.
+            gri_->time_limit = time_limit_seconds_ / 60;
+            gri_->remaining_time = time_limit_seconds_;
             SpawnNPCs();
             gri_->respawn_players_needed = {1, 1};
             had_valid_players_ = {false, false};
@@ -480,6 +484,9 @@ void World::ResetLevel() {
     for (auto& pc : controllers_) {
         pc->pawn = nullptr;
         pc->died = false;
+        pc->played_in_round = false;
+        pc->late_joiner = false;
+        pc->late_join_at = -1.0;
         pc->respawn_at = -1.0;
         pc->collide_world = false;
         if (pc->pri) pc->pri->b_dead = false;
@@ -586,12 +593,26 @@ bool World::LoadMissionRulesFromJson(const std::string& json) {
                 st.loc[k] = static_cast<float>(s["location"].arr[k].num);
             st.yaw = static_cast<int32_t>(s["yaw"].Int());
             st.weapon = s["weapon"].Str();
+            for (const auto& i : s["fp"].arr) st.fp.push_back(static_cast<int>(i.num));
+            st.only = s["only"].b;
+            st.random_spawn = s["random_spawn"].b;
+            st.frightened = s["frightened"].b;
+            st.sight = static_cast<int32_t>(s["sight"].Int(19200));
             npc_starts_.push_back(st);
         }
-        for (const auto& f : n["firing_positions"].arr)
-            if (f.arr.size() == 3)
-                npc_firing_positions_.push_back({static_cast<float>(f.arr[0].num), static_cast<float>(f.arr[1].num),
-                                                 static_cast<float>(f.arr[2].num)});
+        npc_fog_ = static_cast<float>(n["fog"].num);
+        // [x, y, z] in older bundles; now [x, y, z, yaw, flags, cover0..15].
+        for (const auto& f : n["firing_positions"].arr) {
+            if (f.arr.size() < 3) continue;
+            FiringPos fp;
+            for (int k = 0; k < 3; ++k) fp.loc[k] = static_cast<float>(f.arr[static_cast<size_t>(k)].num);
+            if (f.arr.size() >= 5) {
+                fp.yaw = static_cast<int32_t>(f.arr[3].num);
+                fp.flags = static_cast<int>(f.arr[4].num);
+            }
+            for (size_t d = 0; d < 16 && 5 + d < f.arr.size(); ++d) fp.cover[d] = static_cast<uint8_t>(f.arr[5 + d].num);
+            npc_firing_positions_.push_back(fp);
+        }
         LOG_INFO("Enemy NPCs: %zu starts, %zu firing positions, cap %d", npc_starts_.size(),
                  npc_firing_positions_.size(), npc_max_);
     }
@@ -905,6 +926,10 @@ bool World::AssignRole(ServerPlayerController& pc, int32_t role_index) {
     namespace FT = network::rep::FireTeamInfo;
     namespace CR = network::rep::ClassRoleRI;
     if (!pc.pri || !pc.pri->OnPlayableTeam()) return false;
+    // Retail (AA_GameInfo DeploymentWarning, GRI.bRoleSwappingDisabled):
+    // swaps are refused only while the deployment countdown runs. Mid-round a
+    // live soldier keeps his kit; the new role's applies at his next spawn.
+    if (phase_ == MatchPhase::kDeploymentWarning) return false;
     int32_t team = pc.pri->team->team_index;
     if (team < 0 || team > 1 || role_index < 0 ||
         role_index >= static_cast<int32_t>(role_slots_[static_cast<size_t>(team)].size()))
@@ -963,6 +988,17 @@ bool World::AssignRole(ServerPlayerController& pc, int32_t role_index) {
     return true;
 }
 
+void World::MaybeLateJoin(ServerPlayerController& pc) {
+    // Retail ServerSelectClassRole_ByIndex: a player without a pawn who
+    // hasn't played this round volunteers 5 s after picking a role.
+    if (phase_ != MatchPhase::kInProgress || pc.pawn || !pc.pri || !SupportsRespawning() ||
+        pc.played_in_round || pc.late_joiner || pc.late_join_at >= 0.0)
+        return;
+    pc.late_join_at = clock_ + 5.0;
+    ++pc.late_join_serial;
+    LOG_INFO("%s qualifies to join late", pc.pri->player_name.c_str());
+}
+
 void World::SetRoundTimes(int32_t role_selection_seconds, int32_t deployment_seconds) {
     if (!gri_) return;
     if (role_selection_seconds > 0) gri_->role_selection_time = role_selection_seconds;
@@ -1001,6 +1037,7 @@ const World::SpawnPoint* World::FireTeamSpawn(const ServerPlayerController& pc) 
 }
 
 ServerPawn* World::SpawnPawn(ServerPlayerController& pc) {
+    if (pc.pri && pc.pri->OnPlayableTeam() && !pc.pawn) pc.played_in_round = true;
     if (!pc.pri || !pc.pri->OnPlayableTeam() || pc.pawn) return pc.pawn;
     const int32_t team = pc.pri->team->team_index;
     const SpawnPoint* fsp = FireTeamSpawn(pc);
@@ -1426,17 +1463,82 @@ void World::FireRound(ServerPawn& pawn) {
 // Later list entries (penetration exits) and spread aren't modelled yet.
 void World::TraceShot(ServerPawn& pawn, ServerRoundActor& weapon) {
     constexpr uint32_t kImpactRepList = 56;
-    constexpr float kEyeOffset = 31.0f, kRange = 32768.0f;
+    // Where retail's trace starts above the pawn's location (fitted to the
+    // ImpactRepList rays of the Bridge AI captures: standing +33, crouched
+    // +20, prone about +3); a fixed 31 put crouched and prone shots high.
+    const float kEyeOffset = (pawn.prone ? 3.0f : pawn.crouched ? 20.0f : 33.0f) - pawn.body_drop;
+    constexpr float kRange = 32768.0f;
     const ServerPlayerController* shooter = nullptr;
     for (const auto& pc : controllers_) if (pc->pawn == &pawn) shooter = pc.get();
     if (!shooter) return;
+    // AA_BulletWeapon.GetAdjustedAim: the view plus the weapon's sway
+    // (SwayAimOffset, from ServerOffsetAim) -- where the sight points.
+    // Sighted: a Gaussian minutes-of-angle variance (fMinutesOfAngleRating,
+    // 1 MoA = 8.34). From the hip: a weighted random cone of
+    // CombatWeaponAccuracy{,Crh,Prn} (the DMR and MSP use the M16A4's).
+    struct Accuracy { const char* cls; int stand, crouch, prone; float moa; };
+    static const Accuracy kAccuracy[] = {
+        {"AA_BulletWeapon_M16DMR", 275, 225, 175, 1}, {"AA_BulletWeapon_ObranMSP", 275, 225, 175, 1},
+        {"AA_BulletWeapon_M16A4", 275, 225, 175, 2},  {"AA_BulletWeapon_ObranNP", 275, 225, 175, 2},
+        {"AA_BulletWeapon_M4A1", 350, 300, 250, 3},   {"AA_BulletWeapon_ObranKNP", 350, 300, 250, 3},
+        {"AA_BulletWeapon_M249", 425, 375, 225, 3},   {"AA_BulletWeapon_ObranLMK", 425, 375, 225, 3}};
+    const Accuracy* acc = &kAccuracy[4];
+    for (const auto& a : kAccuracy) if (weapon.class_name == a.cls) acc = &a;
+    auto frand = [] { return std::rand() / static_cast<double>(RAND_MAX); };
+    // The sway only moves the sighted rifle; from the hip retail aims along
+    // the view itself (AA_Pawn.GetAdjustedAimFor: GetViewRotation()).
+    const int sway_on = pawn.sights ? 1 : 0;
+    double aim_pitch = static_cast<int16_t>(shooter->rotation_pitch & 0xFFFF) +
+                       sway_on * static_cast<int16_t>(pawn.aim_offset & 0xFFFF);
+    double aim_yaw = (shooter->rotation_yaw & 0xFFFF) + sway_on * static_cast<int16_t>((pawn.aim_offset >> 16) & 0xFFFF);
+    if (pawn.sights) {
+        auto moa = [&] { return (frand() > 0.5 ? 8.34 : -8.34) * acc->moa * std::exp(-(std::pow(frand(), 2) / 0.18)); };
+        aim_pitch += moa();
+        aim_yaw += moa();
+    } else {
+        const int base = pawn.prone ? acc->prone : pawn.crouched ? acc->crouch : acc->stand;
+        // GetWeightedBaseAim: most shots well inside the cone.
+        static const double kBand[10][2] = {{0, 0}, {0, .25}, {.25, .5}, {.5, .65}, {.65, .7},
+                                            {.7, .75}, {.75, .8}, {.8, .85}, {.85, .9}, {.9, 1}};
+        const double r = frand();
+        const int band = std::min(9, static_cast<int>(r * 10));
+        const double delta = r - band * 0.1;
+        const double frac = kBand[band][0] + (kBand[band][1] - kBand[band][0]) * 10 * delta;
+        const double extent = (frand() > 0.5 ? 1 : -1) * std::floor(frac * base);
+        const double theta = frand() * 2 * 3.14159265358979;
+        aim_pitch += extent * std::sin(theta);
+        aim_yaw += extent * std::cos(theta);
+    }
     const double k = 3.14159265358979 * 2.0 / 65536.0;
-    const double pitch = static_cast<int16_t>(shooter->rotation_pitch & 0xFFFF) * k;
-    const double yaw = (shooter->rotation_yaw & 0xFFFF) * k;
+    {   // per-shot record: how far the shot left the view, and why
+        const double vp = static_cast<int16_t>(shooter->rotation_pitch & 0xFFFF);
+        const double vy = shooter->rotation_yaw & 0xFFFF;
+        const double dyaw = std::remainder(aim_yaw - vy, 65536.0);
+        LOG_INFO("Shot %s: %s %s sway (%d, %d) off view %.2f deg (pitch %+.0f yaw %+.0f)", pawn.label.c_str(),
+                 pawn.sights ? "SIGHTS" : "hip", pawn.prone ? "prone" : pawn.crouched ? "crouch" : "stand",
+                 static_cast<int16_t>((pawn.aim_offset >> 16) & 0xFFFF), static_cast<int16_t>(pawn.aim_offset & 0xFFFF),
+                 std::hypot(aim_pitch - vp, dyaw) * 360.0 / 65536.0, aim_pitch - vp, dyaw);
+    }
+    const double pitch = aim_pitch * k;
+    const double yaw = aim_yaw * k;
     const Vec3 dir{static_cast<float>(std::cos(pitch) * std::cos(yaw)),
                    static_cast<float>(std::cos(pitch) * std::sin(yaw)),
                    static_cast<float>(std::sin(pitch))};
-    const Vec3 start{pawn.location[0], pawn.location[1], pawn.location[2] + kEyeOffset};
+    // A player's shot leaves from their camera: read from the live client
+    // (2026-10-13, standing, scope up) 4.6 right of the pawn, 2 back and
+    // 31.4 up; from the hip 1.1 right, 8 back. From the pawn's centre at
+    // +33, sighted shots hit left of and above the red dot.
+    float fwd = 0.0f, right = 0.0f, up = kEyeOffset;
+    if (!pawn.is_npc) {
+        fwd = pawn.sights ? -2.0f : -8.0f;
+        right = pawn.sights ? 4.6f : 1.1f;
+        if (!pawn.crouched && !pawn.prone) up = pawn.sights ? 31.4f : 32.0f;
+    }
+    const float vyaw = static_cast<float>((shooter ? shooter->rotation_yaw : pawn.rotation_yaw) & 0xFFFF) *
+                       3.14159265f / 32768.0f;
+    const Vec3 start{pawn.location[0] + std::cos(vyaw) * fwd - std::sin(vyaw) * right,
+                     pawn.location[1] + std::sin(vyaw) * fwd + std::cos(vyaw) * right,
+                     pawn.location[2] + up};
     const Vec3 end{start.x + dir.x * kRange, start.y + dir.y * kRange, start.z + dir.z * kRange};
     TraceHit hit = collision_.LineTrace(start, end, CollisionWorld::kBlockTrace);
     // Soldiers: vertical cylinders (radius 22, half-height 48 standing, 34
@@ -1447,8 +1549,19 @@ void World::TraceShot(ServerPawn& pawn, ServerRoundActor& weapon) {
     ServerPawn* victim = TracePawns(start, seg, &pawn, /*skip_npcs=*/false, &best_t);
     const Vec3 at = victim ? Vec3{start.x + seg.x * best_t, start.y + seg.y * best_t, start.z + seg.z * best_t}
                            : (hit.hit ? hit.location : end);
+    {   // the sway's miss at that range, for comparing with what the shooter saw
+        const float range = std::sqrt((at.x - start.x) * (at.x - start.x) + (at.y - start.y) * (at.y - start.y) +
+                                      (at.z - start.z) * (at.z - start.z));
+        LOG_INFO("  from (%.1f, %.1f, %.1f) view yaw %d pitch %d", start.x, start.y, start.z,
+                 shooter->rotation_yaw & 0xFFFF, static_cast<int16_t>(shooter->rotation_pitch & 0xFFFF));
+        LOG_INFO("  impact (%.0f, %.0f, %.0f) range %.0f -> %s; sway moves it %.0f units", at.x, at.y, at.z, range,
+                 victim ? SoldierName(victim).c_str() : "world",
+                 sway_on * range * std::hypot(static_cast<int16_t>(pawn.aim_offset & 0xFFFF),
+                                              static_cast<int16_t>((pawn.aim_offset >> 16) & 0xFFFF)) * k);
+    }
     if (victim) DamagePawn(*victim, &pawn, at, dir);
     else if (hit.hit && hit.owner) HitMapActor(hit.owner - 1);
+    NpcBulletNear(pawn, start, at, victim);      // suppression and hearing (npc.cpp)
     pawn.shots_fired = static_cast<uint8_t>(pawn.shots_fired + 1);
     if (pawn.shots_fired == 0) pawn.shots_fired = 1;
 
@@ -1474,7 +1587,7 @@ void World::TraceShot(ServerPawn& pawn, ServerRoundActor& weapon) {
 void World::DamagePawn(ServerPawn& victim, ServerPawn* shooter, const Vec3& at, const Vec3& dir) {
     if (!victim.is_npc && !victim.first_reload_done) return;   // spawn protection (retail)
     const float hh = victim.prone ? 14.0f : (victim.crouched ? 34.0f : 48.0f);
-    const float rel = at.z - victim.location[2];
+    const float rel = at.z - (victim.location[2] - victim.body_drop);
     // Zone -> eHitLocation and the hit's total: head 100 (no wound, down at
     // once), torso 40, legs 35 -- retail's leg hits (capture 2026-10-11, doc
     // sec 39): ~15 at once and ~20 bled out (100 -> 84.88, HealthTarget 64.96).
@@ -1483,6 +1596,18 @@ void World::DamagePawn(ServerPawn& victim, ServerPawn* shooter, const Vec3& at, 
         return;
     }
     const bool legs = rel <= -hh * 0.2f;
+    if (victim.is_npc) {
+        // Enemies take a hit at once, nothing bled out (retail Bridge AI
+        // capture 2026-10-12, user session, ~30 NPC hits): upper torso (3)
+        // drops it to 25, down, in one; lower torso (4) 34; arms and legs
+        // 15 each. Our player shots needed 4-5 chest hits (2026-10-13 live).
+        const bool upper = rel > hh * 0.2f;
+        const int location = legs ? (rel > -hh * 0.6f ? 12 : 13) : upper ? 3 : 4;
+        const float dmg = legs ? 15.0f : upper ? std::max(0.0f, victim.health - kIncapacitationHealth) : 34.0f;
+        AddWound(victim, location, 0.0f, SoldierName(shooter));
+        ApplyDamage(victim, shooter, std::max(dmg, 1.0f), 6464, at, dir);
+        return;
+    }
     const int location = legs ? (rel > -hh * 0.6f ? 12 : 13) : 3;   // HL_UpperLegRight / LowerLegRight / UpperTorso
     const float total = legs ? 35.0f : 40.0f;
     const float now = total * 0.43f;
@@ -1520,7 +1645,9 @@ void World::ApplyDamage(ServerPawn& victim, ServerPawn* shooter, float dmg, uint
         victim.npc_last_hit_at = clock_;
     }
     if (victim.health <= kIncapacitationHealth) {
-        if (victim.is_npc) KillPawn(victim, shooter);          // an NPC is neutralized outright
+        // An NPC hit in the head dies outright (retail frame 12295: bTearOff,
+        // Health -15); otherwise it goes down like a soldier.
+        if (victim.is_npc && dmg >= 100.0f) KillPawn(victim, shooter);
         else Incapacitate(victim, damage_class, SoldierName(shooter));
     }
 }
@@ -1545,8 +1672,27 @@ float World::InjuredSpeedModifier(float health) {
 // 1.2 s graph 0 {42 -> 13} + bRagdollTick/bRagdollStuck, which settles the
 // ragdoll into the incapacitated pose (UpdateIncapacitated).
 void World::Incapacitate(ServerPawn& victim, uint32_t damage_class, const std::string& instigator) {
-    if (victim.is_npc) {                        // bled down: neutralized
-        KillPawn(victim, nullptr);
+    if (victim.is_npc) {
+        // Retail (Bridge AI capture, ch 262, t=526.26): the killer is told
+        // at once (ClientNotifyNeutralizedNME); the NPC lies at Health 25,
+        // IncapacitationType set, graph 0 {41}, graph 2 {5 -> 67}, ragdoll
+        // ~0.9 s on, until secured or finished.
+        CreditNpc(victim, nullptr);
+        victim.incapacitated = true;
+        victim.incap_at = clock_;
+        victim.incap_stage = 0;
+        victim.health = kIncapacitationHealth;
+        victim.health_target = kIncapacitationHealth;
+        victim.incap_type_index = ObjectIndex("AA3Baseline", damage_class);
+        victim.incap_instigator = instigator;
+        victim.bleeding = false;
+        victim.movement_speed_modifier = 0.5f;
+        victim.SetGraph(0, 41, 41);
+        victim.SetGraph(2, 5, 67);
+        victim.graph_steps.clear();
+        victim.velocity[0] = victim.velocity[1] = victim.velocity[2] = 0.0f;
+        if (auto it = npc_brains_.find(&victim); it != npc_brains_.end()) { it->second.path.clear(); it->second.path_i = 0; }
+        LOG_INFO("NPC %s incapacitated by %s", victim.npc_name.c_str(), instigator.c_str());
         return;
     }
     // Down with the case: the HUD's "drop it for a squad member" notice
@@ -1588,6 +1734,15 @@ bool World::Withdraw(ServerPawn* pawn) {
 }
 
 void World::UpdateIncapacitated(double dt) {
+    for (auto& up : pawns_) {                   // downed enemies: the ragdoll settles (retail +0.9 s)
+        ServerPawn& n = *up;
+        if (!n.is_npc || !n.incapacitated || n.torn_off || n.zip_tie || n.incap_stage >= 2) continue;
+        if (clock_ - n.incap_at >= 0.9) {
+            n.incap_stage = 2;
+            n.SetGraph(0, 42, 13);
+            n.ragdoll = true;
+        }
+    }
     for (auto& c : controllers_) {
         ServerPawn* p = c->pawn;
         if (!p || !p->incapacitated || p->torn_off) continue;
@@ -1628,6 +1783,89 @@ void World::UpdateIncapacitated(double dt) {
 // Death as retail replicates it (GamePlayPCAP_Legit_Server t=81.83): pawn
 // Health 0, bTearOff, Controller/PRI/Owner cleared, LastKnownPRI kept, death
 // animation states; PRI Deaths+1, iDied, bIsDead; PlayerStorageProxy
+
+void World::CreditNpc(ServerPawn& victim, ServerPawn* killer) {
+    if (victim.npc_credited) return;
+    victim.npc_credited = true;
+    ServerPlayerController* kpc = killer && killer->controller ? killer->controller
+                                                                : FindPlayerController(victim.last_hit_by_client);
+    if (!kpc) return;
+    kpc->last_npc_kill = victim.npc_name;
+    ++kpc->npc_kill_serial;
+    if (kpc->pri) kpc->pri->score += 10;
+}
+
+// Retail (Bridge AI capture frame 12295): pouches None; its weapon slots and
+// dump pouch close, its rifle drops.
+void World::StripNpc(ServerPawn& npc) {
+    npc_brains_.erase(&npc);
+    npc.dump_pouch = nullptr;
+    npc.next_mag_pouch = nullptr;
+    if (auto it = pawn_inventory_.find(&npc); it != pawn_inventory_.end())
+        for (auto& g : it->second)
+            if (g->class_name.find("WeaponSlot") != std::string::npos || g->class_name.find("Pouch") != std::string::npos)
+                g->gone = true;
+    npc.velocity[0] = npc.velocity[1] = npc.velocity[2] = 0.0f;
+    DropNpcWeapon(npc);
+}
+
+// ServerTryToIdentifyCorpse for an enemy NPC (retail 13:31:39 / 13:28:00):
+// one still down is secured -- "X secured Y (Z : weapon)" to the team,
+// EnemySecured (commo 47), off the scoreboard, AD_SecuredCount and
+// GA_ZipCuffLabel, +30 (rule 10, Duty+Respect); its pawn: graph 4 {150 ->
+// 83}, bBodyAlreadyIdentified, Health 0, IncapacitationType None,
+// bPlayZipTie; channel closed ~18 s on. A body is confirmed: EnemyDown
+// (commo 46), the secured and confirmed counts, +30 (10) and +15 (rule 9).
+bool World::SecureEnemy(ServerPlayerController& pc, const std::string& name) {
+    ServerPawn* me = pc.pawn;
+    if (!me || me->torn_off || me->incapacitated) return false;
+    ServerPawn* npc = nullptr;
+    for (auto& up : pawns_)
+        if (up->is_npc && up->npc_name == name && !up->destroyed && !up->npc_body_gone && !up->body_identified) npc = up.get();
+    if (!npc) return false;
+    if (std::hypot(npc->location[0] - me->location[0], npc->location[1] - me->location[1]) > 300.0f) return false;
+    SecureEvent ev;
+    ev.id = next_secure_id_++;
+    ev.by = &pc;
+    ev.team = TeamOf(pc);
+    ev.npc = name;
+    npc->body_identified = true;
+    if (npc->incapacitated && !npc->torn_off && npc->health > 0.0f) {
+        ev.alive = true;
+        std::string wounder = "Unknown", weapon = "Unknown";
+        if (ServerPlayerController* w = FindPlayerController(npc->last_hit_by_client)) {
+            if (w->pri) wounder = w->pri->player_name;
+            if (w->pawn)                        // sLastWoundedByWepType: its rifle, e.g. "M16DMR"
+                if (auto it = pawn_inventory_.find(w->pawn); it != pawn_inventory_.end())
+                    for (const auto& g : it->second)
+                        if (g->class_name.rfind("AA_BulletWeapon_", 0) == 0) { weapon = g->class_name.substr(16); break; }
+        }
+        ev.message = (pc.pri ? pc.pri->player_name : std::string("?")) + " secured " + name + " (" + wounder + " : " +
+                     weapon + ")";
+        npc->zip_tie = true;
+        npc->health = npc->health_target = 0.0f;
+        npc->incap_type_index = 0;
+        npc->SetGraph(4, 150, 83);
+        npc->npc_body_until = clock_ + 18.0;
+        StripNpc(*npc);
+        ++pc.secured_count;
+        if (pc.pri) pc.pri->score += 30;
+    } else if (npc->torn_off) {
+        ++pc.secured_count;
+        ++pc.confirmed_count;
+        if (pc.pri) pc.pri->score += 45;
+    } else {
+        npc->body_identified = false;
+        return false;
+    }
+    ev.secured = pc.secured_count;
+    ev.confirmed = pc.confirmed_count;
+    LOG_INFO("%s %s %s", pc.pri ? pc.pri->player_name.c_str() : "?", ev.alive ? "secured" : "confirmed", name.c_str());
+    secure_events_.push_back(ev);
+    if (secure_events_.size() > 64) secure_events_.erase(secure_events_.begin());
+    return true;
+}
+
 // bIsDead; the controller loses its pawn (the client goes to spectating).
 void World::KillPawn(ServerPawn& victim, ServerPawn* killer) {
     DropObjective(victim);                      // a carried briefcase falls with the soldier
@@ -1655,17 +1893,12 @@ void World::KillPawn(ServerPawn& victim, ServerPawn* killer) {
         killer->pri->kills += 1;
         killer->pri->score += 1;
     }
-    // An enemy NPC: whoever last hurt it gets the neutralization notice.
+    // An enemy NPC: whoever last hurt it gets the neutralization notice
+    // (unless it went down first); the body stays ~60 s.
     if (victim.is_npc) {
-        ServerPlayerController* kpc = killer && killer->controller ? killer->controller
-                                                                    : FindPlayerController(victim.last_hit_by_client);
-        if (kpc) {
-            kpc->last_npc_kill = victim.npc_name;
-            ++kpc->npc_kill_serial;
-            if (kpc->pri) kpc->pri->score += 10;
-        }
-        npc_brains_.erase(&victim);
-        DropNpcWeapon(victim);
+        CreditNpc(victim, killer);
+        if (!victim.zip_tie) StripNpc(victim);
+        victim.npc_body_until = clock_ + 60.0;
     }
     if (pc) {
         if (pc->proxy) {
@@ -1741,7 +1974,10 @@ void World::SetTrigger(ServerPawn* pawn, bool down) {
 // {79->79} (ready) at +4.0s. No magazine swap in that sample.
 void World::BeginReload(ServerPawn* pawn) {
     if (!pawn || !pawn->loaded_weapon || pawn->incapacitated) return;
-    if (pawn->spare_mags <= 0) return;           // no magazines left: nothing to reload with
+    if (!pawn->pri) return;
+    bool any = false;                            // a magazine left to load (AdvancedHasAmmoMag)
+    for (const auto& m : pawn->pri->primary_mags) any = any || (!m.in_weapon && m.rounds > 0);
+    if (!any) return;
     for (const auto& j : deliberate_reloads_) if (j.pawn == pawn) return;
     for (const auto& j : reloads_) if (j.pawn == pawn) return;   // initial reload still running
     uint8_t rof = 1;
@@ -1753,7 +1989,10 @@ void World::BeginReload(ServerPawn* pawn) {
     // ready {79->79} at +4.9s.
     pawn->SetGraph(4, 32, 32);
     ++pawn->confirm_reload_serial;
-    deliberate_reloads_.push_back({pawn, clock_, 0, rof});
+    bool empty = true;                           // nothing chambered: the bolt is back
+    if (ServerRoundActor* w = FindInventory(pawn, pawn->loaded_weapon))
+        if (const DataField* c = w->Get(57, 0)) empty = c->v.kind != DataValue::Kind::kObj;
+    deliberate_reloads_.push_back({pawn, clock_, 0, rof, empty});
 }
 
 ServerRoundActor* World::FindInventory(const ServerPawn* pawn, const ServerActor* a) {
@@ -1831,25 +2070,69 @@ void World::UpdateReloads() {
             a->Set(idx, elem, v);
             a->Touch(idx, elem);
         };
+        // Advanced inventory (AA_Weapon.AdvancedReplaceAmmoMag; retail Bridge
+        // AI capture 2026-10-12, user t=350.26-351.29): the loaded magazine
+        // goes back to the PRI's list with what it has left (index -1);
+        // 0.4 s on, the fullest one's rounds go into the same magazine actor
+        // (RoundIndex = RoundCount - rounds) with the magazine count; 1 s
+        // after the dump it's flagged in the weapon. Nothing is thrown away.
+        auto* pri = pawn->pri;
         if (it->stage == 0 && t >= 0.4) { set_rof(0); it->stage = 1; }
-        if (it->stage == 1 && t >= 1.8) {
-            if (!SwapMagazine(pawn, weapon, mag))
-                touch(mag, 29, -1, DataValue::Int(0));    // AA_AmmoContainerBase.RoundIndex
-            if (pawn->spare_mags > 0) --pawn->spare_mags;
-            ++pawn->mag_count_serial;
+        if (it->stage == 1 && t >= 1.4) {
+            if (pri && pri->primary_mag_index >= 0 && pri->primary_mag_index < ServerPlayerReplicationInfo::kMaxMagazines) {
+                auto& cur = pri->primary_mags[static_cast<size_t>(pri->primary_mag_index)];
+                const DataField* ri = mag ? mag->Get(29) : nullptr;
+                cur.rounds = std::max<int32_t>(0, pawn->mag_rounds - static_cast<int32_t>(ri ? ri->v.i : pawn->mag_rounds));
+                cur.in_weapon = false;
+                pri->primary_mag_index = -1;
+            }
             it->stage = 2;
         }
-        if (it->stage == 2 && t >= 3.7) {
-            mag = FindInventory(pawn, pawn->loaded_mag);
-            touch(mag, 29, -1, DataValue::Int(1));        // round chambered
-            DataValue round; round.kind = DataValue::Kind::kObj; round.s = "AA3Baseline";
-            round.net = 1044;                             // AA_AmmoType_556mmBall
-            touch(weapon, 57, 0, round);                  // ChamberedRound[0]
-            touch(weapon, 62, -1, DataValue::Bool(false)); // bBoltLockedToRear
+        if (it->stage == 2 && t >= 1.8) {
+            int best = -1, count = 0;
+            if (pri)
+                for (int i = 0; i < ServerPlayerReplicationInfo::kMaxMagazines; ++i) {
+                    const auto& m = pri->primary_mags[static_cast<size_t>(i)];
+                    if (m.in_weapon || m.rounds <= 0) continue;
+                    ++count;
+                    if (best < 0 || m.rounds > pri->primary_mags[static_cast<size_t>(best)].rounds) best = i;
+                }
+            it->chosen = best;
+            if (best >= 0)                                // AA_AmmoContainerBase.RoundIndex
+                touch(mag, 29, -1, DataValue::Int(pawn->mag_rounds - pri->primary_mags[static_cast<size_t>(best)].rounds));
+            if (pri) {
+                int total = 0;
+                for (const auto& m : pri->primary_mags) total += m.rounds;
+                LOG_INFO("Reload %s: loads magazine %d (%d rounds); %d magazines, %d rounds in all",
+                         pri->player_name.c_str(), best, best >= 0 ? pri->primary_mags[static_cast<size_t>(best)].rounds : 0,
+                         count, total);
+            }
+            pawn->spare_mags = count;                     // ClientAdvancedInventoryInitializeAmmoMagazineCount
+            ++pawn->mag_count_serial;
             it->stage = 3;
         }
-        if (it->stage == 3 && t >= 4.8) { set_rof(pawn->sprinting ? 0 : pawn->selected_rof); it->stage = 4; }
-        if (it->stage == 4 && t >= 4.9) { pawn->SetGraph(4, 79, 79); it = deliberate_reloads_.erase(it); continue; }
+        if (it->stage == 3 && t >= 2.43) {
+            if (pri && it->chosen >= 0) {
+                pri->primary_mags[static_cast<size_t>(it->chosen)].in_weapon = true;
+                pri->primary_mag_index = it->chosen;
+            }
+            it->stage = 4;
+        }
+        if (it->stage == 4 && t >= 3.7) {
+            // A round goes into an empty chamber only (live retail capture
+            // 2026-10-09, empty magazine); with one chambered, nothing moves.
+            if (it->empty && it->chosen >= 0) {
+                const DataField* ri = mag ? mag->Get(29) : nullptr;
+                touch(mag, 29, -1, DataValue::Int(static_cast<int32_t>(ri ? ri->v.i : 0) + 1));
+                DataValue round; round.kind = DataValue::Kind::kObj; round.s = "AA3Baseline";
+                round.net = 1044;                         // AA_AmmoType_556mmBall
+                touch(weapon, 57, 0, round);              // ChamberedRound[0]
+                touch(weapon, 62, -1, DataValue::Bool(false)); // bBoltLockedToRear
+            }
+            it->stage = 5;
+        }
+        if (it->stage == 5 && t >= 4.8) { set_rof(pawn->sprinting ? 0 : pawn->selected_rof); it->stage = 6; }
+        if (it->stage == 6 && t >= 4.9) { pawn->SetGraph(4, 79, 79); it = deliberate_reloads_.erase(it); continue; }
         ++it;
     }
 
@@ -1917,6 +2200,11 @@ void World::UpdateReloads() {
             pawn->loaded_weapon = weapon;
             pawn->loaded_mag = mag;
             ++pawn->loaded_mag_serial;
+            if (pawn->pri) {                               // retail frame 522: entry 0 in the weapon
+                pawn->pri->mag_actor = mag;
+                pawn->pri->primary_mags[0].in_weapon = true;
+                pawn->pri->primary_mag_index = 0;
+            }
             it->stage = 4;
         }
         if (it->stage == 4 && t >= 5.48) {                 // first round chambered (retail frame 774)

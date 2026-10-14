@@ -585,32 +585,94 @@ bool MissionExtractor::Build(MissionData& out) {
             enemies = enemies || (e && e->b);
         }
         if (enemies) {
+            // Firing positions first (a start lists its own by reference):
+            // [x, y, z, yaw, flags, cover0..cover15]. flags: 1 shoot
+            // standing, 2 crouched, 4 prone, 8 may throw grenades. Each cover
+            // direction (every 4096 of yaw, AA_NPCPatrolPathNode.
+            // acdCoverDirections): 1 cover, 2 must crouch, 4 can stand,
+            // 8 shoot standing, 16 shoot crouched.
             std::ostringstream st, fp;
-            bool first_s = true, first_f = true;
+            bool first_s = true;
+            size_t n_fp = 0;
+            std::map<std::pair<const Package*, size_t>, size_t> fp_index;
+            for (const Package* sh : shards_) {
+                Graph s(*sh);
+                for (size_t i : s.OfClass("AA_NPCFiringLocationPathNode")) {
+                    const PropList& pr = s.Props(i);
+                    const PropValue* l = FindProp(pr, "Location");
+                    if (!l || l->kind != PropValue::kVector) continue;
+                    const PropValue* r = FindProp(pr, "Rotation");
+                    auto flag = [&](const char* n, bool def) {
+                        const PropValue* b = FindProp(pr, n);
+                        return b ? b->b : def;
+                    };
+                    int flags = (flag("bCanShootStanding", true) ? 1 : 0) | (flag("bCanShootCrouched", false) ? 2 : 0) |
+                                (flag("bCanShootProne", false) ? 4 : 0) | (flag("bCanThrowGrenades", false) ? 8 : 0);
+                    fp << (n_fp ? "," : "") << "[" << Fmt(l->vec[0]) << "," << Fmt(l->vec[1]) << "," << Fmt(l->vec[2])
+                       << "," << (r && r->kind == PropValue::kRotator ? (r->rot[1] & 0xFFFF) : 0) << "," << flags;
+                    for (int d = 0; d < 16; ++d) {
+                        int c = 0;
+                        if (const PropValue* cd = FindProp(pr, "acdCoverDirections", d); cd && cd->kind == PropValue::kStruct) {
+                            auto mb = [&](const char* n) { const PropValue* b = FindProp(cd->members, n); return b && b->b; };
+                            c = (mb("bIsCover") ? 1 : 0) | (mb("bMustCrouch") ? 2 : 0) | (mb("bCanStand") ? 4 : 0) |
+                                (mb("bCanShootStanding") ? 8 : 0) | (mb("bCanShootCrouched") ? 16 : 0);
+                        }
+                        fp << "," << c;
+                    }
+                    fp << "]";
+                    fp_index[{sh, i}] = n_fp++;
+                }
+            }
             for (const Package* sh : shards_) {
                 Graph s(*sh);
                 for (size_t i : s.OfClass("AA_NPCEnemyPlayerStart")) {
-                    const PropValue* l = FindProp(s.Props(i), "Location");
-                    const PropValue* r = FindProp(s.Props(i), "Rotation");
+                    const PropList& pr = s.Props(i);
+                    const PropValue* l = FindProp(pr, "Location");
+                    const PropValue* r = FindProp(pr, "Rotation");
                     if (!l || l->kind != PropValue::kVector) continue;
                     std::string weapon = "AA_BulletWeapon_ObranKNP";      // the class default (most retail NPCs)
-                    if (const PropValue* w = FindProp(s.Props(i), "aabwWeaponClass"); w && w->kind == PropValue::kObject)
+                    if (const PropValue* w = FindProp(pr, "aabwWeaponClass"); w && w->kind == PropValue::kObject)
                         if (std::string n = sh->ResolveIndex(w->i); !n.empty() && n != "<null>")
                             weapon = n.substr(0, n.find(' '));          // drops " (import #N)"
+                    // Its own firing positions (bManFiringPositionsOnly keeps
+                    // it to them), sight (AA_NPCBasePlayerStart.
+                    // iMaxSightDistance, 19200 by default) and temperament.
+                    std::ostringstream own;
+                    if (const PropValue* f = FindProp(pr, "aanpcfpFiringPositions"); f && f->kind == PropValue::kIntArray) {
+                        bool first = true;
+                        for (int32_t ref : f->ints) {
+                            const int32_t e = RefToExport(ref);
+                            auto it = fp_index.find({sh, static_cast<size_t>(e)});
+                            if (e < 0 || it == fp_index.end()) continue;
+                            own << (first ? "" : ",") << it->second;
+                            first = false;
+                        }
+                    }
+                    const PropValue* only = FindProp(pr, "bManFiringPositionsOnly");
+                    const PropValue* rnd = FindProp(pr, "bSpawnRandomPatrolLocation");
+                    const PropValue* sight = FindProp(pr, "iMaxSightDistance");
+                    std::string thinking;
+                    if (const PropValue* t = FindProp(pr, "agpnpcbtNPCThinkingClass"); t && t->kind == PropValue::kObject)
+                        thinking = sh->ResolveIndex(t->i);
                     st << (first_s ? "" : ",") << "{\"location\":[" << Fmt(l->vec[0]) << "," << Fmt(l->vec[1]) << ","
                        << Fmt(l->vec[2]) << "],\"yaw\":" << (r && r->kind == PropValue::kRotator ? (r->rot[1] & 0xFFFF) : 0)
-                       << ",\"weapon\":" << util::JsonQuote(weapon) << "}";
+                       << ",\"weapon\":" << util::JsonQuote(weapon) << ",\"fp\":[" << own.str() << "]"
+                       << ",\"only\":" << (only && only->b ? "true" : "false")
+                       << ",\"random_spawn\":" << (rnd && rnd->b ? "true" : "false")
+                       << ",\"sight\":" << (sight && sight->kind == PropValue::kInt ? sight->i : 19200)
+                       << ",\"frightened\":" << (thinking.find("Frightened") != std::string::npos ? "true" : "false") << "}";
                     first_s = false;
                 }
-                for (size_t i : s.OfClass("AA_NPCFiringLocationPathNode")) {
-                    const PropValue* l = FindProp(s.Props(i), "Location");
-                    if (!l || l->kind != PropValue::kVector) continue;
-                    fp << (first_f ? "" : ",") << "[" << Fmt(l->vec[0]) << "," << Fmt(l->vec[1]) << "," << Fmt(l->vec[2]) << "]";
-                    first_f = false;
-                }
             }
+            // WorldInfo.fpAIFogDistance: NPCs see no farther (Bridge night 2500).
+            // The persistent level (the map package) holds the WorldInfo.
+            float fog = 0.0f;
+            Graph mg(map_);
+            for (size_t w : mg.OfClass("WorldInfo"))
+                if (const PropValue* f = FindProp(mg.Props(w), "fpAIFogDistance"); f && f->kind == PropValue::kFloat) fog = f->f;
             if (!first_s)
-                rl << "\"npc\":{\"max\":35,\"starts\":[" << st.str() << "],\"firing_positions\":[" << fp.str() << "]},";
+                rl << "\"npc\":{\"max\":35,\"fog\":" << Fmt(fog) << ",\"starts\":[" << st.str()
+                   << "],\"firing_positions\":[" << fp.str() << "]},";
         }
     }
     // Co-op reinforcement points (AA_MCPlayerRespawnMarker; retail's

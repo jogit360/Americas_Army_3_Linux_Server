@@ -49,6 +49,13 @@ void World::RequestRespawn(ServerPlayerController& pc) {
 
 void World::UpdateReinforcements() {
     if (!SupportsRespawning()) return;
+    // DelayedLateJoinTeamWithClassTimer: the late joiner volunteers.
+    for (auto& c : controllers_)
+        if (c->late_join_at >= 0.0 && clock_ >= c->late_join_at) {
+            c->late_join_at = -1.0;
+            c->late_joiner = true;
+            RequestRespawn(*c);
+        }
     if (next_wave_at_ < 0.0) next_wave_at_ = clock_ + kWaveSeconds;
     // The HUD countdown (GRI.fpRespawnTimeSeconds, retail counts it down by
     // the second) and players still needed per team.

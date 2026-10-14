@@ -264,6 +264,26 @@ struct ServerPlayerReplicationInfo : ServerActor {
     // bHasReviveKit: an IFAK in the pouch (AA_InventoryContainer_Pouch_IFAK
     // sets it; retail sends True at spawn). The client's treat prompt needs it.
     bool has_revive_kit = false;
+    // Advanced inventory magazines (AA_PlayerReplicationInfo.
+    // amAvailablePrimaryMagazines[9], iPrimaryWeaponMagazineIndex,
+    // bPrimaryWeaponActive): each magazine's rounds, the one in the weapon
+    // flagged. A reload puts the loaded one back with what it has left and
+    // takes the fullest (AA_Weapon.AdvancedGrabAmmoMag). Every entry names
+    // the one magazine actor the weapon loads (retail Bridge AI capture
+    // 2026-10-12, user session t=350.26-351.29).
+    struct AmmoMagazine {
+        bool in_weapon = false;
+        int32_t rounds = 0;
+        bool operator==(const AmmoMagazine& o) const { return in_weapon == o.in_weapon && rounds == o.rounds; }
+        bool operator!=(const AmmoMagazine& o) const { return !(*this == o); }
+    };
+    static constexpr int kMaxMagazines = 9;
+    std::array<AmmoMagazine, kMaxMagazines> primary_mags{};
+    int32_t primary_mag_index = 0;
+    bool primary_weapon_active = false;
+    std::string mag_class_pkg;            // aaacbAmmoClass: class reference
+    uint32_t mag_class_net = 0;
+    const ServerActor* mag_actor = nullptr;   // aaacbAmmoContainer
     bool has_had_role_assigned = false;
     bool is_fire_team_leader = false;
     bool vote_ready = false;
@@ -298,6 +318,13 @@ struct ServerPlayerController : ServerActor {
     uint32_t objective_pickup_serial = 0;
     uint32_t objective_drop_serial = 0;
     uint32_t objective_incap_serial = 0;   // ClientNotifyIncapacitatedWithObjective()
+    int secured_count = 0, confirmed_count = 0;   // AD_SecuredCount / AD_ConfirmCount this session
+    // Retail late join (ServerSelectClassRole_ByIndex with no pawn mid-round):
+    // StartCountDownToLateJoin(5), then ServerRequestRespawn 5 s later.
+    bool played_in_round = false;          // PRI.bPlayerPlayedInRound
+    bool late_joiner = false;              // PRI.bPlayerIsLateJoiner
+    double late_join_at = -1.0;
+    uint32_t late_join_serial = 0;         // StartCountDownToLateJoin() to send
     // ClientMessage(S, Type) calls for the protocol to send (co-op
     // reinforcement notices), oldest first.
     std::vector<std::pair<std::string, std::string>> pending_messages;
@@ -372,9 +399,16 @@ struct ServerPawn : ServerActor {
     bool first_reload_done = false;
     bool is_npc = false;
     std::string npc_name;
+    // A downed enemy (retail Bridge AI capture, 13:31:22-13:31:39): secured
+    // by a player (AA_Pawn.bBodyAlreadyIdentified, AA_NPCMultiplayerPawn.
+    // bPlayZipTie) or a dead one confirmed; npc_credited: the neutralization
+    // has been credited (at the incapacitation).
+    bool body_identified = false, zip_tie = false, npc_credited = false;
     struct ServerPawn* npc_last_hit_by = nullptr;   // NPC: who last shot it (it turns to face them)
     double npc_last_hit_at = -100.0;
     uint32_t last_hit_by_client = 0;  // the player whose shot last hurt it (kill credit)
+    double npc_body_until = -1.0;     // a killed NPC's body stays this long (retail ~60 s)
+    bool npc_body_gone = false;       // ... then its channel closes
     float health = 100.0f;               // Pawn.Health
     // Spawn inventory (doc sec 30): Pawn.InvManager and AA_Pawn.DumpPouch,
     // owner-only references (retail frame 368).
@@ -589,6 +623,15 @@ struct ServerPawn : ServerActor {
     uint8_t physics = 1;  // EPhysics: PHYS_Walking (sent to non-owners only)
     bool    b_is_prone = false;
     bool    b_is_crouched = false;
+    // AA_Pawn.bProxyInStandState / bProxyInCrouchState: an NPC's posture as
+    // retail states it to everyone (Bridge AI capture, ch 262 / 279).
+    // bProxyInProneState (80): retail's prone NPC keeps its standing
+    // location and only states this; the client's prone pose lies the body
+    // down from there (retail bot capture 2026-10-12, ch 247 / 3 / 175).
+    bool    proxy_in_stand = true, proxy_in_crouch = false, proxy_in_prone = false;
+    // How far an NPC's body sits below its replicated location: a prone
+    // NPC's (standing) location is 29 above where its body lies.
+    float   body_drop = 0.0f;
     bool    b_is_walking = false;
 
     // Body identity (AA_Pawn.*, rep::Pawn::sBodySoldierName/iBodyTeamIndex). No real soldier-model

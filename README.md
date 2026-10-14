@@ -222,9 +222,14 @@ parent repo's session memory / docs.
 - Treatment: only passive treatment and the Saline revive are modelled.
   Other IFAK treatments, several medics on one patient, medic voice lines
   and treatment scoring are missing. Reach is retail's 120 units.
-- Enemy NPCs patrol, take firing positions, crouch and throw frags (doc sec
-  40.7), a simplified version of retail's thinking classes; their tuning
-  comes from bot runs against retail. A dropped NPC rifle can't be picked up.
+- Enemy NPCs run retail's controller and thinking classes as their scripts
+  read: scanning, firing positions, suppression, grenades and smoke,
+  reloads, flashbangs, incapacitation and securing (doc sec 40.8). Their
+  aim spread and a map-wide frag limit are ours, tuned against bot runs on
+  retail. Not modelled:
+  - picking up a dropped NPC rifle;
+  - NPC medics reviving the downed;
+  - patrol paths for NPCs without firing positions.
 - Collision has the level's blocking volumes now, but a few spots still
   differ from retail (the mission bot logs them as BLOCKED).
 - Hit zones: head, torso and legs only (no arms).

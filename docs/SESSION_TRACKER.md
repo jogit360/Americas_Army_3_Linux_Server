@@ -446,3 +446,8 @@ LOG_SET_LEVEL(LOG_LEVEL_DEBUG);  // In main.cpp
   relevancy; dropped NPC rifles; downed-carrier hand-off; GRI reinforcement countdown;
   movement checks (INI MovementChecks). Mission bot: round-1 extraction on our server.
   Doc sec 40.7.
+- Client crash on NPC kills fixed (dropped rifle/briefcase ReplicatedCollisionType is 4 bits);
+  retail's NPC controller/thinking classes ported (firing-position-only states, suppression,
+  hearing, contact orders, grenades/smoke, reloads, flashbangs, fog-limited sight); downed NPCs
+  and securing/confirming; frags hurt NPCs; mid-round role changes with retail's late join;
+  NPC speed 200. Doc sec 40.8.

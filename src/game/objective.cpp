@@ -209,7 +209,7 @@ void World::DropObjective(ServerPawn& carrier, float ahead) {
     const float fall[3] = {0.0f, 0.0f, -70.0f};
     drop->Set(kDropVelocity, -1, Vector(fall));
     drop->Set(kDropPhysics, -1, Byte(kPhysFalling, 4));
-    drop->Set(kDropCollisionType, -1, Byte(3, 3));
+    drop->Set(kDropCollisionType, -1, Byte(3, 4));   // ECollisionType is 4 bits (retail)
     drop->Set(kDropBlockActors, -1, DataValue::Bool(true));
     drop->Set(kDropInventoryClass, -1, Obj("AA3Baseline", kClassBriefcaseUS));
     DataValue mesh; mesh.kind = DataValue::Kind::kRaw; mesh.s = "111111111111";   // retail's bits

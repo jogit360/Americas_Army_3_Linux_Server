@@ -518,6 +518,38 @@ uint32_t EncodePRIRep(BitWriter& w, const ServerPlayerReplicationInfo& cur,
             class_ref(cur.primary_weapon_pkg, cur.primary_weapon_net);
             ++n;
         }
+        // Magazines (advanced inventory): bInWeapon, iRoundsInMagazine, the
+        // ammo and weapon classes, the magazine actor. Unused slots keep the
+        // class default and aren't sent.
+        if (prev == nullptr ? cur.primary_weapon_active : cur.primary_weapon_active != prev->primary_weapon_active) {
+            w.WriteIntMax(rep::PRI::bPrimaryWeaponActive, M); w.WriteBit(cur.primary_weapon_active); ++n;
+        }
+        if (prev == nullptr ? cur.primary_mag_index != 0 : cur.primary_mag_index != prev->primary_mag_index) {
+            w.WriteIntMax(rep::PRI::iPrimaryWeaponMagazineIndex, M);
+            w.WriteInt(static_cast<uint32_t>(cur.primary_mag_index));
+            ++n;
+        }
+        for (int i = 0; i < game::ServerPlayerReplicationInfo::kMaxMagazines; ++i) {
+            const auto& m = cur.primary_mags[static_cast<size_t>(i)];
+            const bool used = m.in_weapon || m.rounds != 0;
+            const uint32_t wire = used && cur.mag_actor && ctx->channel_of ? ctx->channel_of(cur.mag_actor) : 0;
+            const uint32_t key = 0x40000000u + rep::PRI::amAvailablePrimaryMagazines * 16u + static_cast<uint32_t>(i);
+            bool changed = prev == nullptr ? used : m != prev->primary_mags[static_cast<size_t>(i)];
+            if (!changed && used && ctx->sent_refs) {
+                auto it = ctx->sent_refs->find(key);
+                changed = it == ctx->sent_refs->end() || it->second != wire;
+            }
+            if (!changed) continue;
+            w.WriteIntMax(rep::PRI::amAvailablePrimaryMagazines, M);
+            w.WriteByte(static_cast<uint8_t>(i));
+            w.WriteBit(m.in_weapon);
+            w.WriteInt(static_cast<uint32_t>(m.rounds));
+            class_ref(used ? cur.mag_class_pkg : std::string(), cur.mag_class_net);
+            class_ref(used ? cur.primary_weapon_pkg : std::string(), cur.primary_weapon_net);
+            WriteActorRef(w, wire);
+            if (ctx->sent_refs) (*ctx->sent_refs)[key] = wire;
+            ++n;
+        }
         if (prev == nullptr ? !cur.primary_weapon_pkg.empty() : cur.primary_mods != prev->primary_mods) {
             // mriPrimaryWeaponOneMods: bForceMods, then Main/Top/Left/Right/
             // Bottom/RearSight rail classes.
@@ -825,6 +857,12 @@ uint32_t EncodePawnRep(BitWriter& w, const ServerPawn& cur, const ServerPawn* pr
     if (!owner) {
         // ---- Non-owners only: `bIsCrouched, FlashCount, FiringMode`.
         bool_field(rep::Pawn::bIsCrouched, cur.b_is_crouched, prev ? &prev->b_is_crouched : nullptr);
+        if (cur.is_npc) {
+            constexpr uint32_t kProxyInStandState = 78, kProxyInCrouchState = 79, kProxyInProneState = 80;   // AA_Pawn
+            bool_field(kProxyInStandState, cur.proxy_in_stand, prev ? &prev->proxy_in_stand : nullptr);
+            bool_field(kProxyInCrouchState, cur.proxy_in_crouch, prev ? &prev->proxy_in_crouch : nullptr);
+            bool_field(kProxyInProneState, cur.proxy_in_prone, prev ? &prev->proxy_in_prone : nullptr);
+        }
         byte_field(rep::Pawn::FlashCount, cur.flash_count, prev ? &prev->flash_count : nullptr);
         byte_field(rep::Pawn::FiringMode, cur.firing_mode, prev ? &prev->firing_mode : nullptr);
     }
@@ -895,15 +933,14 @@ uint32_t EncodePawnRep(BitWriter& w, const ServerPawn& cur, const ServerPawn* pr
         ++n;
     }
     float_if(rep::Pawn::Stamina, cur.stamina, base.stamina);
-    float_if(rep::Pawn::Asphyx, cur.asphyx, base.asphyx);
+    // Asphyx / bAsphyxiating stay on the server: they time the held breath
+    // here, but to the client they are real asphyxiation and it plays the
+    // choking (sucking chest wound) sound with them (2026-10-13 live).
     if (cur.moving_to_target != base.moving_to_target) {
         w.WriteIntMax(rep::Pawn::bAdvMvmt_MovingToTarget, M); w.WriteBit(cur.moving_to_target); ++n;
     }
     if (cur.holding_breath != base.holding_breath) {
         w.WriteIntMax(rep::Pawn::bHoldingBreath, M); w.WriteBit(cur.holding_breath); ++n;
-    }
-    if (cur.asphyxiating != base.asphyxiating) {
-        w.WriteIntMax(rep::Pawn::bAsphyxiating, M); w.WriteBit(cur.asphyxiating); ++n;
     }
     if (cur.aim_offset != base.aim_offset) {
         w.WriteIntMax(rep::Pawn::AimOffset, M);
@@ -931,6 +968,15 @@ uint32_t EncodePawnRep(BitWriter& w, const ServerPawn& cur, const ServerPawn* pr
     }
     if (cur.bleeding != base.bleeding) {
         w.WriteIntMax(rep::Pawn::bIsBleeding, M); w.WriteBit(cur.bleeding); ++n;
+    }
+    // A downed enemy secured or confirmed (retail ch 262, t=543.69):
+    // AA_Pawn.bBodyAlreadyIdentified, AA_NPCMultiplayerPawn.bPlayZipTie (137).
+    if (cur.body_identified != base.body_identified) {
+        w.WriteIntMax(rep::Pawn::bBodyAlreadyIdentified, M); w.WriteBit(cur.body_identified); ++n;
+    }
+    if (cur.is_npc && cur.zip_tie != base.zip_tie) {
+        constexpr uint32_t kNPCPlayZipTie = 137;
+        w.WriteIntMax(kNPCPlayZipTie, M); w.WriteBit(cur.zip_tie); ++n;
     }
     if (cur.ragdoll != base.ragdoll) {
         w.WriteIntMax(rep::Pawn::bRagdollTick, M); w.WriteBit(cur.ragdoll);

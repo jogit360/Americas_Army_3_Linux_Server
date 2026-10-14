@@ -276,7 +276,7 @@ Scripted end-to-end clients (run against a live server, each prints PASS/FAIL; a
 | Area | What's left |
 |---|---|
 | IFAK | Real-client confirmation of the treat prompt; symptom-based active treatments on conscious soldiers (tourniquet, dressings, etc.); several medics on one patient; the medic call ("m") and withdraw (backspace) RPCs; treatment scoring and XP; medic voice and the "Stop..." commo reply; retail's 33 ms progress cadence |
-| Co-op AI (Bridge AI) | Real-client test of the ladder fix, briefcase, hand-off, F5 respawn and countdown, enemies (movement, grenades, dropped rifles) and the ACOG stance fix; picking up a dropped NPC rifle; full movement physics (moves are only checked) |
+| Co-op AI (Bridge AI) | Real-client test of the retail-script enemy AI (doc sec 40.8), securing downed enemies, mid-round role changes and the crash fix; picking up a dropped NPC rifle; NPC medics; full movement physics (moves are only checked) |
 | Damage | Arm and upper-torso hit zones (only head, torso and legs today) |
 | Weapons | Dropped weapons and pickups (`AA_DroppedPickup_*`); M320 40 mm rounds; remote players' weapon visibility |
 | Rounds | Team-1 spawn points and the full side swap (roles/spawns); map rotation after the match |

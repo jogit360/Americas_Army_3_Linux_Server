@@ -112,6 +112,9 @@ const std::vector<RpcSpec>& Table() {
         // A downed carrier drops the case for a teammate (SafeDropObjective).
         {rep::PC::ServerDropObjective, PcRpc::kServerDropObjective, "ServerDropObjective", {K::kBool}},
         {rep::AGP_PC::SendCommoRequest, PcRpc::kSendCommoRequest, "SendCommoRequest", {K::kEnum6}},
+        // Securing a downed enemy / confirming a dead one (+ ServerUse).
+        {rep::AGP_PC::SendEnemyDownRequest, PcRpc::kSendEnemyDownRequest, "SendEnemyDownRequest",
+         {K::kString, K::kObject}},
         {rep::PC::ServerES2Active, PcRpc::kServerES2Active, "ServerES2Active",
          {K::kObject, K::kObject, K::kBool}},
         // AGP_PlayerController-only (appended after AA_PC's 473 fields).
