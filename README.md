@@ -1,11 +1,14 @@
 # AA3 Linux Server Implementation
 
-//Currently THIS IS STILL A WORK IN PROGRESS -- tested with the real AA3 client
-//(Wine) and with scripted bot clients, not yet with a full server of players.
-//A player can join, pick a team and role, spawn on Bridge, move, shoot every
-//role's rifle with its sights, throw and cook grenades, pick up ES2 perks, open
-//doors, vault, climb, get wounded, bleed, be treated or revived by a teammate's
-//IFAK, and play full rounds and matches.
+> **Work in progress.** Tested with the real AA3 client (under Wine) and with
+> scripted bot clients, not yet with a full server of players.
+>
+> A player can join, pick a team, role and loadout, spawn, move, vault, mantle
+> and climb, shoot every role's rifle with its sights, fire the XM320, throw and
+> cook grenades, pick up ES2 perks and enemy rifles, open doors, get wounded,
+> bleed, be treated or revived by a teammate's IFAK, and play full rounds and
+> matches, including the Bridge AI co-op mission against retail-script enemy
+> soldiers.
 
 A Linux dedicated server for America's Army 3 (v3.3.1), reimplemented from
 the retail server's network traffic, the cooked game packages and the
@@ -21,7 +24,8 @@ original UnrealScript source that ships inside them.
 
 ### Build & Run
 ```bash
-cd aa3-linux-server
+git clone git@github.com:jogit360/Americas_Army_3_Linux_Server.git
+cd Americas_Army_3_Linux_Server
 mkdir -p build && cd build
 cmake .. && make -j$(nproc)
 cd ..                                   # the server reads config/ relative to here
@@ -33,7 +37,7 @@ browser. `--steam` (default) also advertises to the Steam master server.
 
 ## Project Status
 
-**Playable across all 18 retail maps, plus the Bridge AI co-op mission,** with zero dependencies on client packages. Last updated 2026-10-12.
+**Playable across all 18 retail maps, plus the Bridge AI co-op mission,** with zero dependencies on client packages. Last updated 2026-10-14.
 
 | Area | Status |
 |------|--------|
@@ -42,30 +46,38 @@ browser. `--steam` (default) also advertises to the Steam master server.
 | Actor replication: WorldInfo, GRI, TeamInfo, PRI, PC, Pawn, inventory, round actors | done |
 | Client RPC decoding (movement, posture, fire, reload, use...) | done (99.998% of retail bunches) |
 | LAN browser beacon (in-game server list + Join) | done |
-| Team join, role selection, deployment, spawn with per-role kits | done (13 roles per team across all maps) |
-| Movement, stance, sprint, vault/mantle, ladders (up and down), hold breath | done (ladder-from-the-top fix bot-tested, doc sec 40.1) |
+| Team join, role selection, deployment, spawn with per-role kits; mid-round role changes (retail late join) | done (13 roles per team across all maps) |
+| Loadouts: light / standard / heavy (`ServerSetLoadoutPreference`), retail magazine and grenade counts | done (doc sec 44) |
+| Encumbrance: `CurrentWeight` from retail item weights, `MovementSpeedModifier` fitted to retail | done (matches retail captures to the gram; doc sec 44) |
+| Movement, stance, sprint, ladders (up and down), hold breath | done (doc sec 40.1) |
+| Vault / mantle / climb picked by obstacle height, crouched variants, hood slide and combat step from a sprint; crouch slide only when running | done (doc sec 43) |
 | Map representation: Modernized Unified Map Bundles (`AA3MAP01`), shipped in the repo as `data/maps/<map>.aa3map.zst` | done (18 maps + Bridge AI, 53 MB, lossless; `aa3_mapbake --verify` 19/19 byte-identical to a fresh bake from the install) |
 | Map collision: lossless instanced mesh collision (`AA3COL03`) + BVH bullet traces | done (the packages' float vertices; quantized `AA3COL04` optional) |
 | Mission & Gameplay data: native extraction of map actors, round roles, rules | done (no capture JSON dependencies) |
-| Weapons: every role's rifle (M4A1, M16A4, M16 DMR, M249) with its fire modes, magazine size, ammo, reloads | done |
+| Weapons: every role's rifle (M4A1, M16A4, M16 DMR, M249) with its fire modes, magazine size, ammo; shots aimed from the client's camera | done (doc sec 40.9) |
+| Reloads: retail's advanced-inventory magazine list (partial magazines kept, fullest loaded next) | done (doc sec 40.9) |
 | Rail mods: iron, CCO, ACOG variants, M95 light, XM320 mount (`ServerSetRailMod`) | done |
+| XM320 grenade launcher: raise / lower, M433 HEDP and M714 smoke, arming, sight zeroing, reload, world gravity | done (bot-tested; no retail grenadier capture, doc sec 41) |
 | Hand grenades: M67 frag, M83 smoke, M106, M84 stun, AN-M14 incendiary; take out, pin, cook, throw, fuse, blast / smoke / burn | done (real-client tested) |
 | ES2 perks: grenade and magazine pickups | done |
+| Picking up an enemy's dropped rifle (Obran KNP / MSP / LMK), carrying two, switching, reloading with 5.56 magazines | done (real-client tested; doc sec 46) |
+| Server-played sounds: enemy reports, near-miss cracks, fly-bys, hits, NPC chatter, mission briefing and radio cues | done (decodes to retail's format; doc sec 42) |
 | Friend/enemy look: the other team appears as the enemy force from each side | done |
 | Breakable windows, doors, ES2 objects | done |
 | Damage by hit zone; wounds that bleed out to a HealthTarget (43% at once / 57% bled at 1.2 hp/s); incapacitation (bleed-out, withdraw); death | done (retail-matched) |
-| Round end: elimination, extraction, time limit; scoreboard; next round; 6-round match | done (bot-tested) |
+| Round end: elimination, extraction, time limit; next round; 6-round match | done (bot-tested) |
+| Scoreboard (Mission / Neutralized / KIA / ROE columns), XP awards, after-action round and match statistics | done (retail rules; doc sec 45) |
 | Multi-map CLI: `--map <name>` / `-m <name>`, `--list` / `-l` | done (18 retail maps; `-m Bridge_inf_co_large_ai` for Bridge AI) |
 | Co-op "Secure and Extract": the briefcase (pickup, carry, drop on death, pickup from the ground, extraction win, reset) | done (bot-tested; Bridge AI, Airfield, Alley; doc sec 40.2) |
 | Co-op reinforcements: F5 respawn queue, 10 s waves at the mission's respawn points | done (bot-tested; doc sec 40.3) |
-| Enemy NPC soldiers (AI missions): 35 spawn with retail gear, spot players by line of sight, shoot back, take damage like players, neutralization notice | first cut (bot-tested; they hold position; doc sec 40.4) |
+| Enemy NPC soldiers (AI missions): retail's controller/thinking classes ported (firing positions, suppression, hearing, grenades and smoke, reloads, flashbangs, fog-limited sight); retail per-hit damage; downed enemies can be secured / confirmed; dropped rifles | done (bot- and real-client tested; doc sec 40.4-40.9) |
 | IFAK treatment: passive treatment (stop bleeding, treat the wound), Saline revive of a downed teammate | done (bot-tested); real-client treat prompt fix awaiting test |
-| Other active treatments (tourniquet, dressings...) on a conscious soldier, multiple treaters, medic scoring/voice | not started |
-| Dropped weapons, M320 rounds, TAH/VIP/other modes | not started |
+| Other active treatments (tourniquet, dressings...) on a conscious soldier, multiple treaters, medic voice | not started |
+| Dropping the player's own rifle (by choice or at death); TAH / VIP / other game modes | not started |
 
 Full write-up, section by section with the retail evidence:
-- [`docs/MAP_MODERNIZATION_SPEC.md`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/docs/MAP_MODERNIZATION_SPEC.md) (Unified Map Bundles, Quantized Collision, Mission Ingestion)
-- [`docs/AA3_ACTOR_REPLICATION.md`](file:///home/odeyin/Documents/AA3/standAlone-aa3-linuxServer/docs/AA3_ACTOR_REPLICATION.md) (Protocol and replication notes)
+- [`docs/MAP_MODERNIZATION_SPEC.md`](docs/MAP_MODERNIZATION_SPEC.md) (Unified Map Bundles, Quantized Collision, Mission Ingestion)
+- [`docs/AA3_ACTOR_REPLICATION.md`](docs/AA3_ACTOR_REPLICATION.md) (Protocol and replication notes)
 
 
 ## Directory Structure
@@ -85,9 +97,13 @@ aa3-linux-server/
 │   │   ├── lan_beacon.cpp       LAN browser (ACPU beacon on 9000/9001)
 │   │   └── a2s_info.cpp         Steam A2S query replies
 │   ├── game/
-│   │   ├── world.cpp            game state: teams, rounds, spawns, damage
-│   │   ├── weapons.cpp          role kits, rail mods, grenades, ES2 perks
+│   │   ├── world.cpp            game state: teams, rounds, spawns, damage, scoring, sounds
+│   │   ├── weapons.cpp          role kits, loadouts, rail mods, XM320, grenades, ES2 perks, pickups
 │   │   ├── medic.cpp            wounds, bleeding, IFAK treatment and revive
+│   │   ├── npc.cpp              enemy soldiers (retail controller/thinking logic)
+│   │   ├── objective.cpp        co-op briefcase (Secure and Extract)
+│   │   ├── reinforcements.cpp   F5 respawn waves
+│   │   ├── navgrid.cpp          walkable-route grid for NPCs and bots
 │   │   ├── collision.cpp        BVH + line traces over the map's collision
 │   │   └── stats_export.cpp     stats JSON
 │   └── util/                    bit streams, JSON, CRC, logging
@@ -98,13 +114,12 @@ aa3-linux-server/
 │   └── maps/                    per-map data: *.aa3.manifest.json (USES), *.round.json,
 │                                *.join.json, *.match.json, *.map_actors.json,
 │                                *.windows.json, *.rules.json
-├── data/maps/                   the 18 retail maps: <map>.aa3map.zst (shipped, lossless)
+├── data/maps/                   18 retail maps + Bridge AI: <map>.aa3map.zst (shipped, lossless)
 ├── data/collision/              <map>.col, legacy flat collision (git-ignored, dev tests)
-├── tools/                       aa3_build_manifests (package dumper/manifest builder),
-│                                gen_rep_layout.py, stats_web.py ...
-├── tests/                       unit tests + scripted clients (fake_client, bot_client,
-│                                grenade_client, medic_client, medic_scenario)
-└── docs/                        protocol and replication notes
+├── tools/                       build_manifests (aa3_build_manifests), map_bake (aa3_mapbake),
+│                                navgrid (aa3_navgrid), gen_rep_layout.py, stats_web.py ...
+├── scripts/                     build.sh, setup_steamworks.sh
+└── docs/                        protocol, replication and map-format notes, session tracker
 ```
 
 Companion tools in the parent repo: `aa3-tools/map_manifest/` (pcap
@@ -125,7 +140,7 @@ Standalone = 0                   # 1 = no Steam (also --standalone)
 LanBeacon = 1                    # in-game LAN browser
 RoleSelectionTime = 10           # seconds (retail 10)
 DeploymentTime = 10              # seconds (retail 10)
-MissionTimeLimit = 420           # round length, seconds (retail Bridge classic 420)
+MissionTimeLimit = 720           # round length, seconds (retail Bridge 420; 0 keeps the map's)
 EnemyNPCs = 1                    # AI missions' enemy soldiers (0 = none)
 MovementChecks = 1               # refuse impossible client moves (0 for scripted tests that teleport)
 RespawnDelay = 0                 # seconds; 0 = no respawn until the next round (retail classic)
@@ -168,6 +183,11 @@ Round/join/match actor data: `aa3-tools/map_manifest/extract_round_actors.py`
 
 ## Testing
 
+The test sources (`tests/`: unit tests and the scripted Python clients
+below) are not in this repo since commit `1f9a15c`; they live in the
+development tree (`../aa3-linux-server/tests/`). The commands below are run
+from there; this repo's CMake builds only the server and the three tools.
+
 ```bash
 # scripted players against a running server (port from the ini)
 python3 tests/bot_client.py --port 8777 --team 1 --role 1 --no-fire           # a target
@@ -192,7 +212,7 @@ build/aa3_navgrid data/maps/<bundle>.aa3map.zst x1 y1 z1 x2 y2 z2   # a walkable
 python3 ../aa3-tools/map_manifest/decode_rep.py --pcap cap.pcapng --frame 1 --to-frame 99999 \
     --ch 4 --class AA_GameReplicationInfo --cdo --server-port 8777
 ```
-`ctest --test-dir build` runs the 5 registered suites (collision parity,
+In the development tree, `ctest --test-dir build` runs the 5 registered suites (collision parity,
 package extractor, collision quantization, mission extraction, map bundle
 validation). Without an AA3 install, the three that read its packages report
 as skipped. Other unit tests (`build/rep_roundtrip_test`,
@@ -220,14 +240,13 @@ parent repo's session memory / docs.
 - No full server-side movement physics: moves are checked for speed and
   for passing through walls (MovementChecks), not simulated.
 - Treatment: only passive treatment and the Saline revive are modelled.
-  Other IFAK treatments, several medics on one patient, medic voice lines
-  and treatment scoring are missing. Reach is retail's 120 units.
+  Other IFAK treatments, several medics on one patient and medic voice
+  lines are missing. Reach is retail's 120 units.
 - Enemy NPCs run retail's controller and thinking classes as their scripts
   read: scanning, firing positions, suppression, grenades and smoke,
   reloads, flashbangs, incapacitation and securing (doc sec 40.8). Their
   aim spread and a map-wide frag limit are ours, tuned against bot runs on
   retail. Not modelled:
-  - picking up a dropped NPC rifle;
   - NPC medics reviving the downed;
   - patrol paths for NPCs without firing positions.
 - Collision has the level's blocking volumes now, but a few spots still
@@ -235,19 +254,32 @@ parent repo's session memory / docs.
 - Hit zones: head, torso and legs only (no arms).
 - Side swap (round 4) only flips which team attacks; roles and spawn points
   don't swap. After round 6 the match restarts on the same map.
-- Dropped weapon pickups, M320 40 mm rounds and other game modes are not implemented.
+- XM320: no retail capture of a grenadier firing; the animation state pairs,
+  muzzle point and when the PRI round counts change are inferred (doc sec 41).
+- Weapons: players can pick up enemy rifles, but can't drop their own, and
+  their rifle doesn't drop at death.
+- Sounds: teammates' shouted voice lines (medic, reloading, medevac) and
+  world bullet impacts by surface are not sent.
+- Encumbrance: the stamina-burn factor and retail's exact injury factor are
+  not modelled (doc sec 44).
+- Client "Ran out of virtual memory" crash: the 2026-10-14 cause (a missing
+  bit in `ClientHearSound`) is fixed; the 2026-10-13 occurrence predates
+  server sounds and may have another cause (still being watched).
+- TAH, VIP and other game modes are not implemented.
 - No anti-cheat.
 
 ## Next Steps
 
-1. Real-client test of the treat prompt fix (doc sec 39.7), then the rest of
-   the IFAK: symptom-based active treatments on conscious soldiers, the medic
-   call ("m") and withdraw (backspace) RPCs from the retail capture,
-   treatment scoring (`ClientNotifyScoringEventDetails`), medic voice and the
-   "Stop..." commo reply, arm hit zones.
-2. Real-client test of round end, scoreboard and spectator camera.
-3. Dropped weapons (`AA_DroppedPickup_*`), M320 rounds, team-1 spawn points, full side swap.
-4. Data for more maps, then map rotation.
+1. Real-client test of the XM320, loadouts / encumbrance and the scoreboard;
+   find the cause of the 2026-10-13 client crash.
+2. The rest of the IFAK: real-client test of the treat prompt (doc sec 39.7),
+   symptom-based active treatments on conscious soldiers, the medic call ("m")
+   and withdraw (backspace) RPCs, medic voice and the "Stop..." commo reply;
+   arm hit zones.
+3. Dropping the player's own rifle, teammates' shouted voice lines, team-1
+   spawn points and the full side swap.
+4. Retail captures for maps other than Bridge, then map rotation and other
+   game modes.
 
 ## License
 
@@ -255,5 +287,5 @@ This project is reverse-engineered from America's Army 3. Use for educational pu
 
 ---
 
-**Status**: Active development -- playable rounds on Bridge
-**Last Updated**: 2026-10-12
+**Status**: Active development -- playable classic rounds and the Bridge AI co-op mission
+**Last Updated**: 2026-10-14
