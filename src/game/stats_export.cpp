@@ -76,9 +76,24 @@ std::string StatsExporter::RenderPlayer(const ServerPlayerController& pc, bool o
         o << ",\"match\":";
         RenderStatStruct(o, &pc.stat_manager->match, PlayerMatchStatsFields(),
                          PlayerMatchStats::kNumFields);
+        // "round": this round so far; "last_round": the block published to
+        // the client at the last round end (doc sec 45).
         o << ",\"round\":";
+        RenderStatStruct(o, &pc.live_round, PlayerRoundStatsFields(), PlayerRoundStats::kNumFields);
+        o << ",\"last_round\":";
         RenderStatStruct(o, &pc.stat_manager->round, PlayerRoundStatsFields(),
                          PlayerRoundStats::kNumFields);
+    }
+    if (const ServerPlayerReplicationInfo* r = pc.pri) {
+        // What the in-game scoreboard shows (PRI fields).
+        o << ",\"scoreboard\":{\"score\":" << r->score << ",\"deaths\":" << r->deaths
+          << ",\"kia\":" << r->i_died << ",\"neutralized\":" << r->neutralized
+          << ",\"round_neutralized\":" << r->round_neutralized << ",\"secured\":" << r->secured_enemy
+          << ",\"objectives\":" << r->objectives_completed
+          << ",\"medic\":" << (r->medic_active + r->medic_passive + r->medic_recap)
+          << ",\"honor_xp\":" << r->xp_round_honor << ",\"match_total_score\":" << r->match_total_score
+          << ",\"rounds_played\":" << r->rounds_played << ",\"rounds_won\":" << r->rounds_won
+          << ",\"rounds_lost\":" << r->rounds_lost << "}";
     }
     o << "}";
     return o.str();

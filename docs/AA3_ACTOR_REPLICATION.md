@@ -3868,3 +3868,488 @@ without a controller, so NPCs never took grenade damage. They do now.
   +33 standing and +20 crouched (6 of 6 crouched shots in the user's
   capture, 2-4 units across). Prone is about +3, from a smaller cluster in
   the bot capture. Player and NPC shots, and NPC eyes, now use these.
+
+### 40.9 More fixes from the real-client tests (2026-10-13)
+
+- *Enemies stepping forward and snapping back.* An NPC's velocity stayed
+  set after it reached its route point, so clients kept extrapolating it.
+  It's now cleared on arrival. Route points also keep clear of walls, and
+  the floor under an NPC is sampled around its rim, not just at its centre.
+- *Crash when a secured NPC's channel reopened.* Fixed in
+  `protocol_handler.cpp` (the body's channel is no longer reopened after
+  it closes).
+- *Prone NPCs half in the floor.* The client's prone pose lays the body
+  down itself. Retail never lowers a prone NPC and never sends `bIsProne`.
+  It sends `bProxyInProneState` (80) = True and `bProxyInStandState` False,
+  and the location stays at standing height (bot capture 2026-10-12, 3 of
+  3 cases). We lowered the location as well, so the body went down twice.
+  NPCs now do as retail. Crouch keeps `bIsCrouched` +
+  `bProxyInCrouchState`, 10 units down. The server's own traces (eyes,
+  hits) use the body's real height (`body_drop`).
+- *Shots needed to down an enemy.* Retail NPCs take each hit at once and
+  don't bleed (user capture 2026-10-12, ~30 hits):
+  - head (location 1): dead;
+  - upper torso (3, TensionPneumo): straight to 25 (down);
+  - lower torso (4): -34;
+  - limbs: -15.
+
+  Ours did 17 plus bleeding, so 5-8 shots.
+- *Shots landing left of the red dot.* Retail aims from the camera
+  (`AA_BulletWeapon.GetAdjustedAim`). The live client's camera, read from
+  its POV cache:
+  - sighted: 2 back, 4.6 right, 31.4 up from the pawn;
+  - from the hip: 8 back, 1.1 right, 32 up.
+
+  Its rotation is the server's view rotation. Player shots now start
+  there. From the hip they don't sway; sighted, the sway still applies.
+- *Reloads.* The server now keeps retail's advanced-inventory magazine
+  list (`amAvailablePrimaryMagazines[9]` (150): `bInWeapon`,
+  `iRoundsInMagazine`, ammo class, weapon class, the one magazine actor;
+  plus `iPrimaryWeaponMagazineIndex` (152) and `bPrimaryWeaponActive`
+  (193)). The reload copies retail (user capture t=350.26-351.29):
+  - the loaded magazine goes back with what it has left;
+  - 0.4 s on, the fullest one loads (`RoundIndex` = RoundCount - rounds),
+    with `ClientAdvancedInventoryInitializeAmmoMagazineCount`;
+  - 1 s after that it's flagged `bInWeapon`;
+  - a fresh round is chambered only into an empty chamber.
+
+  Before this, a reload refilled the same magazine and the client had no
+  magazine to show in hand.
+- *Choking sound after holding breath.* The server timed the hold with
+  `Asphyx` / `bAsphyxiating`. Those are real suffocation, and the client
+  played its sucking-chest-wound sound for them. They're no longer
+  replicated; the server still times the ~6 s hold itself.
+- `MissionTimeLimit = 720` in the ini (12-minute rounds) also sets the GRI's
+  `TimeLimit` / `RemainingTime`.
+
+## 41. XM320 grenade launcher (2026-10-14)
+
+No retail capture has a player firing the launcher. This section is built
+from the scripts and three package sources:
+- the scripts: `AA_WeaponModWeapon[_XM320]`, `AA_Weapon` fire modes,
+  `AA_BulletWeapon` ModReloading;
+- the soldier state graph, decoded from `Sold_Tech.upk`. `StateNode` has
+  `GraphID`, `NodeRepID` and `StateName`, and `NodeRepID` is the value in
+  `RepGraphStates`. The full table is written by the scratch tool
+  `sgdump.py`;
+- the animation lengths in `Mod_Grenade.upk`;
+- the class defaults in AA3Baseline.u.
+
+**Kit.** A role with the XM320 on the bottom rail (Bridge classic T0F0R3
+etc.) gets:
+- the mod actor with `DesiredAmmoIndex` (29) 0 and `PreloadedMag` (30): an
+  `AA_AmmoContainer_M433`. It's spawned by the rifle (Owner), attached to
+  the launcher, with `RoundIndex` 1 (popped into the chamber);
+- on the rifle, `LoadedMagazine[1]` = that container and
+  `ChamberedRound[1]` = `AA_AmmoType_M433`;
+- the launcher's `ClientSetChamberedRound(class)` (31) once its channel
+  is open;
+- on the PRI, `iM433Rounds` (143) = the role's `iM203FragGrenades` - 1
+  (the loaded one) and `iM714Rounds` (142) = its smoke count. Both are at
+  least 2, as `AA_MCMissionManager` forces for the standard loadout.
+
+**Raising and lowering.** `ServerSetWeaponFireMode(1)` (44) is answered
+with `SetWeaponFireModeRecieved` (45) and weapon graph 4 {149 -> 130}
+(Loadm320CharAnimSet -> LgToXM320 -> XM320Idle). After StdPstlGrip_Grab
+(2.33 s) the server sets its fire mode to 1 and sends
+`ClientTransitionToForwardGripComplete()` (43) on the rifle. In
+multiplayer only the authority completes the grip, so the client waits for
+this. Graph 4 then settles at {130}. Mode 0 is {132 -> 79} (StdPstlGrip_Release,
+2.1 s); the client puts its own fire mode back at the state's exit notify.
+
+**Firing.** The client sends `ServerStartFire(1)`. Its FireModeNum byte is
+now parsed for every Start/StopFire (a bare call is mode 0). The round
+leaves:
+- along the view, raised for the sight's range setting. `WeaponZeroingIdx`
+  0-5 = the M50..M300 camera sockets, 50 m steps at 52.49 units per metre;
+  the angle solves sin 2a = gR/v^2 and is 45 degrees past reach;
+- at Speed 2640 (whole-unit Velocity, as the client simulates its own copy
+  from it), from just under the camera;
+- falling by the level's `WorldGravityZ`. Bridge's is -750; the server now
+  reads it from the map's WorldInfo instead of assuming -520, which also
+  corrects thrown grenades.
+
+The M433 (`AA_Projectile_M433_HEDP`, MaxIndex 24) arms after 0.4 s:
+- armed, it bursts at the first wall or soldier it meets, by its own
+  `DamageLookupTable` (Damage 100: 100% to 66 units, 66.7% at 175, 33.7%
+  at 437, 0 at 524);
+- before that, it's a dud that bounces and is gone 5 s later.
+
+The M714 arms at 0.01 s and smokes for its LifeSpan of 60 s. The chamber
+empties (`ChamberedRound[1]` None, `ClientSetChamberedRound(None)`).
+
+**Reload** (`ServerTryToReload` with the launcher up, RT_WeaponMod):
+- graph 4 {140 -> 130} (XM320ReloadEmpty, StdTacRld_01, 2.87 s), or {160}
+  with a round still in (ModReloadFull, 3.33 s; that round goes back to the
+  PRI count first);
+- `GetNextAmmoMag` reuses the launcher's container: one off `iM433Rounds`
+  (or M714), `RoundIndex` 0, `ClientAdvancedInventoryUpdateAmmoMagazineCounts`;
+- at the end, `RoundIndex` 1, `ChamberedRound[1]` and
+  `ClientSetChamberedRound`;
+- with none left, nothing happens (ConfirmReload still goes out).
+
+`ServerWeaponModLoadAmmo("M714"/"M433")` (47) switches the type and
+reloads. `ServerCycleWeaponZeroingRange` (48) and
+`ServerResetWeaponModZeroing` (49) set `WeaponZeroingIdx`.
+
+The scratch test `m320_client.py` (not in the repo) covers the whole flow: grenadier kit, chambered
+round, raise and grip complete, M433 seen by both players, chamber
+emptied, reload, second M433, no reload with none left, M714, back to the
+rifle and a rifle shot. PASS.
+
+**Guesses.**
+- The graph pairs {149 -> 130}, {132 -> 79} and {140 -> 130} follow the
+  draw / throw patterns; there's no grenadier capture to check them.
+- The M433 ArmingTime is retail's; whether the client's projectile uses
+  world gravity is inferred, since the sight sockets only make sense with
+  drop.
+- The round's start point is near the camera; the real MuzzleSocket isn't
+  known.
+- When retail moves the PRI counts during a reload is a guess.
+
+## 42. Server-played sounds (2026-10-14)
+
+Retail's server plays the enemies' sounds with `Actor.PlaySound`, which
+reaches each player as `PlayerController.ClientHearSound(ASound,
+SourceActor, SourceLocation, bStopWhenOwnerDestroyed, bIsOccluded,
+bDistanceDelaySound, PriorityAdjustment)` (48, unreliable). Near misses go
+as `AA_PlayerController.ClientSuppressedByFire(bWhippedByEnemy,
+SoundToPlay, HitLocation, CrackInstigator)` (231). Ours sent neither, so
+the enemies' fire was silent.
+
+The user's retail Bridge AI session (2026-10-12) sent 828 of them.
+Resolving the objects needed retail's own package bases, rebuilt from that
+capture's USES order (171 packages, not ours). Per enemy round:
+
+| sound | cue (package NetIndex) | source / where | flags |
+|---|---|---|---|
+| report | S_Weap_Rifles 324 KNP, 325 MSP (LMK: S_Weap_MG 228); the magazine's last round 322 M4A1_MagEmpty | the shooter | delay, priority 2 |
+| near miss | `ClientSuppressedByFire`, S_Weap_Bullet 202 Crack_Cav / 203 Crack (97:23) | at the bullet's closest point, the shooter as instigator | within `BulletCrackDistanceMax` 120 |
+| fly-by | S_Weap_Bullet 201 Cav_LowCal_x_01 | where the round ended up | occlusion traced |
+| hit | S_Weap_Bullet 205 Armor (torso) / 211 Flesh; S_Map_Airfield 44 Headshot_Cue on the head | the soldier hit | stop with owner, delay |
+
+Enemy chatter is `AA_NPCBaseController.PlayNPCSoundCue` (5 s anti-spam per
+NPC): `Pawn.PlaySound(cue, ..., bStopOnDestroy)`. The cues are the
+`AA_NPCEnemySoldierController` arrays, all in S_Char_VO_Soldier NME_Combat
+/ Auto_NME:
+- `ascSeesEnemyPlayer` 976 / 965 / 973 / 975;
+- `ascInitiallyWounded` 961 / 975;
+- `ascIncapacitated` 961;
+- `ascBuzzedByWeapon` 950 / 945 / 975;
+- `ascLeavingCover` 970 / 945 (reloading);
+- `ascThrowingGrenade` 919;
+- `ascGrenadeLandedNear` 952 / 990 / 919 / 950.
+
+A secure plays US_Auto_NMESecure (931) from the secured enemy (retail
+t=543.69).
+
+Round cues (`ClientPlaySound`, 47):
+- the AI co-op briefing in the round's first-spawn bunch (Bridge: team 0
+  S_AIMissionAudio 352 GoldCOMissionBriefingCue, as the Black-team user
+  heard at t=21.16; 349 for team 1);
+- Radio.SL50 (358) 10.5 s later;
+- a reinforcement spawn gets US_Radio_Combat_SquadMoveOut (S_Char_VO_Soldier
+  1135) and BH_Helo_Dropoff_Cue (S_Map_Airfield 43) (t=218.84).
+
+**Implementation.**
+- `World::PlaySound` queues events, kept for 2 s.
+- Each tick the protocol sends every player the new ones:
+  - within the event's radius;
+  - with `bIsOccluded` from a map trace between the listener's head and
+    the source;
+  - with `SourceActor` as the channel the source is open on, if any.
+- Crack events are for one listener; with the instigator not open on that
+  connection there's no crack, since the client reads its location.
+- Our bundle's package counts are the ones that resolve retail's names,
+  so the IDs line up on the client.
+- A player's own shots now bump `Pawn.FlashCount`, so other players'
+  clients show and play them.
+
+The loopback capture of `npc_scenario.py` decodes to retail's format:
+- 66 reports, 65 fly-bys, cracks, 2 hits, 5 chatter lines;
+- retail's proportions were 390 / 324 / 120 / 37.
+
+Not modelled yet: teammates' shouted lines (`ClientPlayShoutedVoice`:
+Medic hit/down, reloading, need medevac); grenade blasts via
+`ClientHearSound` (the client plays its own); world bullet impacts by
+surface.
+
+## 43. Vault, mantle, climb; crouch slide (2026-10-14)
+
+**What went wrong.**
+- Every `ServerTryVault` played the hood slide (graph 2 {165} then
+  {164}); that came from the one retail sample, a mantle out of a sprint.
+- Every vault after `ServerStartMoveToTarget` played Climb {106}, from the
+  other sample.
+- So soldiers slid and climbed over everything.
+
+**Retail's rule.** `AA_Pawn.FinishVaultMantleMoveToTarget` (and
+`ServerTryVault`) run `TryVaultOrMantle(True)` on the server. Its obstacle
+height (`GetObstacleHeight`, over the feet) picks the state sequence:
+
+| height | state |
+|---|---|
+| 16-40.12 | Vault 65 |
+| 40.13-56 | Mantle 66 |
+| 55.1-87.5 | Climb 106 |
+
+- No headroom on top (a trace up 2 x 44) gives VaultCrh 96 / MantleCrh 97,
+  which end crouched.
+- Out of a sprint (`AdvMvmt_bSprintedIntoVaultMantle`) the graph goes to
+  CombatStep 163 for a vault and HoodSlideBeg 165 -> HoodSlide 164 for a
+  mantle.
+- Climbs stop the sprint.
+
+Retail measures with `AdvMvmt_VaultMantleVolume`s, which we don't have.
+The server measures the map instead:
+- a knee-height trace ahead (130 units, 390 sprinting) finds the face;
+- one down from above just inside it finds the top.
+
+States last their animation's length (Sold_Anims): vault 0.63 s (crouched
+0.77), mantle 0.63, climb 1.2, hood slide 0.5 + 0.47, combat step 0.37.
+Gravity is off for that time and `VaultMantleHeight` is replicated. A
+`ServerTryVault` with nothing found ahead falls back to a plain mantle.
+
+At the user's four vaults in the 2026-10-13 live capture (position and
+view from their ServerMoves):
+- a 47.5 ledge was a mantle (they rose 49);
+- three 61-unit walls were climbs (they rose 59).
+
+The old code played the hood slide for all four.
+
+**Crouch.** It always used SprintToCrouch 118, the CbtSlide animation, so
+every crouch slid. Now:
+- only a running soldier (sprinting, or faster than 250) slides;
+- walking: CbtWalkToCrh 68 -> 1 / TacWalkToCrh 62 -> 14;
+- standing still: CbtStdToCrh 6 -> 71 / TacStdToCrh 15 -> 58.
+
+## 44. Loadouts (light / standard / heavy) and encumbrance (2026-10-14)
+
+**Picking one.** Retail Bridge AI capture, 13:22:44:
+- picking a role (`ServerSelectClassRole_ByIndex(10)`) is followed by
+  `AA_PlayerController.ServerSetLoadoutPreference(index, loadoutPref,
+  topRailPref)` (146) for that role's preference entry: (9, 2, 2);
+- the mission manager then set `PRI.SelectedLoadout` (171,
+  eDefaultLoadoutType, 2 bits) = 2, heavy;
+- at join the client sends one preference per entry (0-10) before holding
+  a role; those are ignored.
+
+The server takes the `loadoutPref` of any `ServerSetLoadoutPreference`
+that arrives while a role is held. The pre-planner's
+`PRI.SetSelectedLoadout(int)` (211, on the PRI channel) is handled too.
+The default is standard.
+
+**What it gives** (`AA_MCMissionManager.AssignLoadout`):
+- standard is the role's own `iPrimaryWeaponOneAmmo` and grenade counts
+  (frag falls back to `rltMediumLoadout` if 0);
+- light and heavy come from `rltLightLoadout` (26) / `rltHeavyLoadout`
+  (24): RoleLoadoutTypes {bDefined, iPrimaryOneAmmo, iPrimaryTwoAmmo,
+  iSecondaryOneAmmo, iSecondaryTwoAmmo, iFragGrenades, iSmokeGrenades,
+  iM106SmokeGrenades, iIncendiaryGrenades, iStunGrenades,
+  mcpmaPrimaryOneModAmmo{iM203FragGrenades, iM203SmokeGrenades,
+  iMasterKeyShells}, ...}.
+
+The count is the total number of magazines, the loaded one included
+(retail heavy DMR: `iPrimaryOneAmmo` 8, eight list entries). Before this
+the server gave the role count plus one. Other rules:
+- the M249 gets 1 / 2 / 3 boxes when its role says more than 3;
+- a count of 0 falls back to 6 (M16A4), 2 (M249) or 3;
+- XM320 M433: light at least 1, standard at least 2, heavy at least 3 (a
+  reinforcement 10), one of them loaded;
+- XM320 M714: light at least 1, standard and heavy at least 2 (a
+  reinforcement 6);
+- 16 in all (`MAX_M320AMMO`).
+
+`PRI.iPrimaryOneAmmo` is sent as the loadout's count. Bridge classic's
+grenadier (T0F0R3):
+
+| loadout | magazines | M433 | M714 | grenades (smoke / M106 / stun) |
+|---|---|---|---|---|
+| light | 3 | 1 | 1 | 1 / 1 / 1 |
+| standard | 6 | 2 | 2 | 2 / 1 / 2 |
+| heavy | 8 | 3 | 2 | 2 / 2 / 2 |
+
+**Encumbrance.** `AA_Pawn.DoEncumbrance` is native. Fitted from the same
+capture, 9 full-health samples, `AA_InventoryManager.CurrentWeight` (29)
+against `AA_Pawn.MovementSpeedModifier`:
+- MovementSpeedModifier = 1.1023 - 0.018797 x kg, no lower than 0.7;
+- 11.34 kg -> 0.8891 and 15.841 -> 0.8045 exactly; 24.46 (M249) -> 0.7.
+
+CurrentWeight sums the class `Weight` defaults:
+
+| item | kg |
+|---|---|
+| M4A1 / M16A4 / M16DMR / M249 | 2.52 / 3.77 / 4.0 / 6.68 |
+| iron / CCO / ACOG sights | 0.204 / 0.335 / 0.452 |
+| XM320 | 1.62 |
+| magazine (rounds in it) / M249 box | 0.45 / 3.14 |
+| M67 / M83 / M106 / M84 / AN-M14 | 0.397 / 0.45 / 0.45 / 0.374 / 0.9 |
+| 40 mm round | 0.23 |
+
+On top of that:
+- +3.021 for the preloaded grenade set, from 4.66 s after spawn;
+- before the initial reload, the loaded magazine counts twice.
+
+Retail heavy DMR: 12.744 at spawn, 12.294 after the reload, 15.315
+steady. Every life of the capture reproduces to the gram (e.g. one smoke
+and one M106 more and a stun less: +0.526; M4A1 for the DMR: -1.48).
+
+The server recomputes the weight every tick and sends CurrentWeight on
+change. The modifier is the encumbrance one times our injury model,
+scaled to 1 at full health; it used to be a fixed 0.8852.
+
+Not modelled: the stamina burn's encumbrance factor
+(`EncumbranceStaminaBurnModifer`), pouches (they weigh nothing in
+retail's sums), retail's exact injury factor (wounds, not just health).
+
+**Client crash ("Ran out of virtual memory").** Twice (2026-10-13 and
+2026-10-14) the real client's log ends with this right after a reload
+press that had nothing to load: no magazines left, or an empty XM320 with
+no M433. The server answered with `ConfirmReload` only, as retail does,
+and the server itself never crashed (the client just timed out). The
+cause is in the client and still open; a memory monitor and a loopback
+capture are kept on the next session to see what precedes it.
+
+**Fix (2026-10-14): the client crashed when sounds were packed together.**
+- AA3's `ClientHearSound` has an eighth, optional parameter,
+  `SwapInfoClass` (ClassProperty). Its Send bit was missing, so every
+  sound was 138 bits instead of retail's 139.
+- Alone in a bunch, the client tolerated it. Behind a second RPC in the
+  same bunch (an enemy's report plus the fly-by, after the second M433
+  burst), it read the rest one bit off and died with "Ran out of virtual
+  memory". Memory was flat at about 2.8 GB until then: one bogus
+  allocation, not a leak.
+- The bit is written now; a loopback capture decodes every packed sound
+  (139 bits each).
+- The 2026-10-13 crash came before server-played sounds existed, so it may
+  have another cause; the memory monitor and capture stay on.
+
+## 45. Scoreboard and round statistics (2026-10-14)
+
+**In-game scoreboard** (`AA_InGameUI_ScoreboardCondensed`). Each row reads
+the PRI:
+- Mission = `iTeamworkEvents` + `iObjectivesCompleted` + the three medic
+  counts + `iES2ObjectsReported` + `iSecuredEnemy`;
+- Neutralized = `iConfirmedNeutralizedEnemy`;
+- KIA = `iDied`;
+- ROE = far + close incidents - forgiven;
+- the total of those.
+
+Before this the server sent only Score / Deaths / iDied, so the columns
+stayed at 0.
+
+Retail's rules (Bridge AI user session, PRI channel):
+
+| event | PRI | XP (+1 s in retail) |
+|---|---|---|
+| enemy neutralized | `iNeutralizedEnemy`, `iRoundEnemyNeutralizedCount` +1 | `fpRoundPersonalCourageXP`, `fpRoundHonorXP`, `fpCurrentMatchTotalScore` +10 |
+| live enemy secured | `iSecuredEnemy`, `iRoundConfirmedNeutralizedEnemy` +1 | Duty +30, Respect +30 (Honor, total +60) |
+| dead enemy confirmed | the same +1 | Duty +15, Respect +15 (+30) |
+| enemy dies of the player's hits (at once or later) | `Score` +1 | |
+| round start | `iMatchRoundsPlayed` +1 | |
+
+- Retail never sent `iConfirmedNeutralizedEnemy` in this session. The server
+  sets it with the neutralizations so the Neutralized column counts kills
+  (asked for by the user).
+- The old Score values (+10 per neutralization, +30 / +45 per secure) were
+  ours, not retail's.
+- The round fields and XP reset each round.
+- The medic counts (`iMedicPassiveTreatment`, `iMedicActiveTreatment`,
+  `iMedicRecapacitation`), `iObjectivesCompleted` (the extraction) and
+  rounds won / lost are kept too.
+
+**Round statistics** (`AA_SteamStatManager.aamppsReplicatedPlayerRoundStats`
+/ `aamppmsReplicatedPlayerMatchStats`, the after-action block). Retail
+publishes them at round end:
+- t=59.93 the match block, t=61.89 the round block;
+- `ClientTransmitLastRoundStats()` at the next deployment;
+- e.g. round 2: DMR 58 fired / 20 hit / 7 headshots / 14 kills, M249 305 /
+  24 / 3 / 11, M4A1 21 / 8 / 2 / 4, kills summing to `iNeutralizedEnemy`
+  29;
+- hits by body part sum to the hits; `iSecuredEnemy` 4, `iConfirmedEnemy`
+  6, `iIncapacitatedByEnemy` 3, `iWoundsTreatedByTeammate` 1, ES2 objects in
+  the round.
+
+The server keeps each player's block as the round runs:
+- per-weapon shots, hits (by zone), headshots and kills (the weapon of the
+  last hit), including a picked-up Obran rifle, the M320 and grenades;
+- grenades thrown, M714 fired;
+- secured / confirmed, incapacitated by an enemy;
+- the medic and ES2 counts, the extraction.
+
+It publishes the block with the match block (rounds won / lost, the best
+neutralization / medic / objective / total scores) at round end, and the
+existing `ClientTransmitLastRoundStats` follows. The stats export's
+"round" is now the live block ("last_round" the published one), plus a
+"scoreboard" object. `tools/stats_web.py` shows Score / Neutralized /
+Secured / KIA / Honor XP.
+
+Verified: the loopback capture decodes every new PRI field (secure
+scenario: neutralize -> 1 / 1 / 10 XP, secure -> iSecuredEnemy 1, Duty 30,
+Respect 30, Honor 70).
+
+## 46. Picking up an enemy's rifle (2026-10-14)
+
+Retail Bridge AI user session, 13:30:12: `ServerRepExec('Pickup', <the
+AA_DroppedPickup_M16DMR>)` while carrying an M249.
+- The pickup's channel closes. The rifle opens to the player: Owner and
+  Instigator the pawn, InvManager, `LoadedMagazine[0]`, `ChamberedRound[0]`,
+  `ClientGivenTo(pawn, bDoNotActivate False)`.
+- It goes on the right-shoulder slot (`InventoryChain`; its AttachedActor
+  and LastInventoryContainer), with its magazine (RoundIndex as dropped,
+  attached to the rifle, `bHiddenByInvManager`).
+- The PC gets `ClientSendHUDNotifyAddedInventory(17)` in a bunch of its
+  own, then `(15)` + `ReceiveLocalizedMessage(Engine.LocalMessage, ...,
+  OptionalObject = the rifle class)`.
+- CurrentWeight goes up (23.89 -> 32.38): the M249 is kept, and the player
+  carries both.
+
+Six seconds later the player took it from the weapon menu
+(`ServerSetCurrentWeapon`):
+- graph 4 {151} at once;
+- +0.2 s the M249 to its chest slot, the new rifle shown,
+  `ClientNotifyChangedWeapon(new, old)`, `InventoryManager.
+  ClientSetPreviousWeapon(old)` (33) and `PreviousWeapon` (30);
+- +0.24 s graph 4 {151 -> 79}, `ActiveInventory` = the new rifle;
+- +0.57 s it's in hand (AttachedActor the pawn).
+
+The server now does both for the enemies' rifles it drops
+(AA_DroppedPickup_ObranKNP / MSP / LMK -> AA_BulletWeapon_Obran*, its
+AA_AmmoContainer_NME_30x556mmBall or 200-round drum; HUD types KNP 11,
+MSP 9, LMK 10, ammo 17 / 18):
+- within 250 units, at most two rifles carried;
+- the switch moves the server's firing state (loaded weapon, its magazine,
+  rounds per magazine) to the rifle in hand, either way;
+- the Obran reloads from the player's 5.56 magazines (AA_Weapon
+  `AdvancedHasAmmoMag` allows Obran / US magazines);
+- the weight counts the rifle and its magazine.
+
+The scratch test `pickup_scenario.py` kills an NPC, picks up its KNP (28 of
+30 rounds), switches to it and fires: PASS.
+
+Not modelled: dropping the player's own rifle, picking up a rifle that's
+already full of the player's kit, and the player's own rifle dropping at
+death.
+
+**Fixes after the first live test (2026-10-14).**
+- *A picked-up rifle hardly fired.* The capture shows the client sent one
+  `ServerStartFire` in 15 s of trying with the KNP, but a `ServerStopFire`
+  on every release. Our own rifle only becomes fireable on the client with
+  `AA_Weapon.ClientLoadAmmoMag(0, magazine)` (doc sec 30), and the
+  picked-up one never got it; its open also lacked `ClientWeaponSet`, which
+  retail's pickup carries. Taking a rifle in hand (switch or grenade
+  put-away) now sends `ClientLoadAmmoMag` for its magazine and shows the
+  magazine; the open keeps `ClientWeaponSet`.
+- *A grenade wrecked the rifle in hand.* After an AN-M14 throw the
+  client's best weapon was the slung KNP, not the M16A4 it had put away.
+  The server drew the M16A4 onto the pawn while the client held the KNP,
+  and kept firing the M16A4's state. A grenade put-away to a different
+  rifle now does a real switch: that rifle shown and drawn, the firing state
+  moved to it, PreviousWeapon the other one, which stays in its slot.
+- *No incendiary sound.* `AA_ThrowProjectile_AN_M14_TH3.DoExplosion` plays
+  its cue on the server only (`Role == ROLE_Authority`), so the clients
+  never play it. The burst now sends ClientHearSound(S_Weap_Grenades 141
+  M14_Explosion) from the projectile.
+- `pickup_scenario.py --via-grenade`: pick up, throw a smoke with the M4 in
+  hand, come back to the KNP; it's drawn with ClientLoadAmmoMag and fires.
+  PASS.

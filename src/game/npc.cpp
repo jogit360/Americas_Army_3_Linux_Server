@@ -649,6 +649,9 @@ void World::NpcTargetEnemy(ServerPawn& npc, NpcBrain& b, ServerPawn* enemy, bool
     b.wait_until = clock_ + Rand(1.5, 3.0);
     LOG_INFO("NPC %s targets %s (%.0f away)", npc.npc_name.c_str(), SoldierName(enemy).c_str(),
              std::hypot(enemy->location[0] - npc.location[0], enemy->location[1] - npc.location[1]));
+    // ascSeesEnemyPlayer: RequestingSuppressiveFire, NMESpotted, ReportLocation,
+    // RequestingSupportAtMyLocation.
+    if (contact) NpcVoice(npc, b, {976, 965, 973, 975});
     if (contact) NpcEnemyContact(npc, *enemy);
 }
 
@@ -709,6 +712,7 @@ void World::NpcBeginThrow(ServerPawn& npc, NpcBrain& b, bool smoke, const Vec3& 
     b.state = NpcState::kThrowing;
     b.step = 0;
     b.throw_smoke = smoke;
+    if (!smoke) NpcVoice(npc, b, {919});         // ascThrowingGrenade: NME_Auto_FragOut
     b.throw_at = at;
     b.wait_until = clock_ + 1.0;                 // the grenade comes to hand
     if (npc.prone) NpcPosture(npc, b, 1);
@@ -749,6 +753,11 @@ void World::NpcShoot(ServerPawn& npc, NpcBrain& b, const Vec3& at_point) {
     npc.flash_count = static_cast<uint8_t>(npc.flash_count + 1);
     if (npc.flash_count == 0) npc.flash_count = 1;
     --b.rounds;
+    {
+        const Vec3 at = victim ? Vec3{start.x + seg.x * best_t, start.y + seg.y * best_t, start.z + seg.z * best_t}
+                               : (hit.hit ? hit.location : end);
+        BulletSounds(npc, start, at, victim, b.rounds <= 0, b.lmk ? 2 : b.marksman ? 1 : 0);
+    }
     // NotifyShootingWeapon: firing steadies it (LMK +8, rifles +2).
     b.bravery = std::min(100, b.bravery + (b.lmk ? 8 : 2));
     if (victim) {
@@ -1081,6 +1090,7 @@ void World::NpcTick(ServerPawn& npc, NpcBrain& b, double dt) {
         b.target = nullptr;
     }
     if (b.rounds <= 0) {                         // NotifyNeedToReload
+        NpcVoice(npc, b, {970, 945});            // ascLeavingCover: RegroupAtThisLocation, CoverMe
         b.state = NpcState::kReloading;
         b.step = 0;
         b.wait_until = clock_ + 0.25;
@@ -1164,6 +1174,7 @@ void World::NpcSuppressed(ServerPawn& npc, NpcBrain& b, ServerPawn* shooter) {
     b.burst_left = 0;
     b.state = NpcState::kHiding;
     b.wait_until = clock_ + Rand(2.5, 4.5);
+    NpcVoice(npc, b, {950, 945, 975});           // ascBuzzedByWeapon: FallBack, CoverMe, RequestingSupport
     LOG_INFO("NPC %s suppressed by %s", npc.npc_name.c_str(), SoldierName(shooter).c_str());
 }
 
@@ -1181,6 +1192,7 @@ void World::NpcGrenadeNear(const Vec3& at, bool frag, const ServerPawn* thrower)
         b.bravery = 20;
         b.danger_near = true;
         b.danger_end_at = clock_ + Rand(1.0, 3.0);
+        if (frag) NpcVoice(npc, b, {952, 990, 919, 950});   // ascGrenadeLandedNear
         const bool only = b.start >= 0 && npc_starts_[static_cast<size_t>(b.start)].only;
         if (!frag || (only && b.state != NpcState::kTargeting) || b.state == NpcState::kThrowing ||
             b.state == NpcState::kFleeGrenade || !nav_ready_.load(std::memory_order_acquire))
@@ -1219,6 +1231,73 @@ void World::NpcFlashbang(const Vec3& at) {
         b.state = NpcState::kFlashbanged;
         b.flash_until = clock_ + 7.5;
     }
+}
+
+// ---------------------------------------------------------------- sounds
+//
+// Retail Bridge AI user session (2026-10-12), every enemy round: its
+// report (S_Weap_Rifles <rifle>_SingleFire; the magazine's last round
+// M4A1_SingleFire_MagEmpty) from the shooter, PriorityAdjustment 2,
+// distance-delayed; a crack (ClientSuppressedByFire) for a player it
+// passed within BulletCrackDistanceMax (120); on a soldier, the impact
+// (S_Weap_Bullet Impact_LowCal_Armor / _Flesh, and HEADSHOT.Headshot_Cue
+// for the head) from him; otherwise the fly-by (Cav_LowCal_x_01) where it
+// ended up. Cue NetIndex values read from the packages.
+void World::BulletSounds(ServerPawn& shooter, const Vec3& start, const Vec3& end, const ServerPawn* victim,
+                         bool last_round, int weapon) {
+    const Vec3 muzzle{shooter.location[0], shooter.location[1], shooter.location[2]};
+    if (last_round) PlaySound("S_Weap_Rifles", 322, &shooter, muzzle, false, true, 2.0f, 20000.0f);
+    else if (weapon == 2) PlaySound("S_Weap_MG", 228, &shooter, muzzle, false, true, 2.0f, 20000.0f);
+    else PlaySound("S_Weap_Rifles", weapon == 1 ? 325 : 324, &shooter, muzzle, false, true, 2.0f, 20000.0f);
+    const Vec3 seg{end.x - start.x, end.y - start.y, end.z - start.z};
+    const float len2 = seg.x * seg.x + seg.y * seg.y + seg.z * seg.z;
+    if (len2 < 1.0f) return;
+    for (const auto& c : controllers_) {
+        const ServerPawn* p = c->pawn;
+        if (!p || p == victim || p == &shooter || p->torn_off) continue;
+        const Vec3 mid{p->location[0], p->location[1], p->location[2] + 10.0f};
+        const float t = ((mid.x - start.x) * seg.x + (mid.y - start.y) * seg.y + (mid.z - start.z) * seg.z) / len2;
+        if (t <= 0.0f || t >= 1.0f) continue;
+        const Vec3 near{start.x + seg.x * t, start.y + seg.y * t, start.z + seg.z * t};
+        const float d = std::sqrt((near.x - mid.x) * (near.x - mid.x) + (near.y - mid.y) * (near.y - mid.y) +
+                                  (near.z - mid.z) * (near.z - mid.z));
+        if (d > 120.0f) continue;
+        // BulletCavitationCue (Crack_Cav) or BulletCrackCue (Crack): retail
+        // 97 to 23 with no pattern in range or miss distance; 80/20 here.
+        SoundEvent e;
+        e.seq = ++sound_seq_;
+        e.at = clock_;
+        e.pkg = "S_Weap_Bullet";
+        e.net = Rand(0, 1) < 0.8 ? 202 : 203;
+        e.source = &shooter;
+        e.loc = near;
+        e.listener = p;
+        sound_events_.push_back(e);
+    }
+    if (victim) {
+        const float hh = victim->prone ? 14.0f : (victim->crouched ? 34.0f : 48.0f);
+        const float rel = end.z - (victim->location[2] - victim->body_drop);
+        const bool head = rel > hh - 14.0f;
+        const bool torso = !head && rel > -hh * 0.2f;
+        PlaySound("S_Weap_Bullet", torso ? 205 : 211, victim, end, true, true, 0.0f, 6000.0f);
+        if (head) PlaySound("S_Map_Airfield", 44, victim, end, true, true, 0.0f, 6000.0f);
+    } else {
+        PlaySound("S_Weap_Bullet", 201, &shooter, end, false, false, 0.0f, 5000.0f);
+    }
+}
+
+void World::NpcVoice(ServerPawn& npc, NpcBrain& b, std::initializer_list<uint32_t> cues) {
+    if (npc.torn_off || npc.health <= 0.0f || cues.size() == 0) return;
+    if (clock_ - b.last_voice < 5.0) return;
+    b.last_voice = clock_;
+    const uint32_t cue = *(cues.begin() + static_cast<size_t>(std::rand()) % cues.size());
+    PlaySound("S_Char_VO_Soldier", cue, &npc, Vec3{npc.location[0], npc.location[1], npc.location[2]}, true, false,
+              0.0f, 5000.0f);
+}
+
+void World::NpcVoice(ServerPawn& npc, std::initializer_list<uint32_t> cues) {
+    auto it = npc_brains_.find(&npc);
+    if (it != npc_brains_.end()) NpcVoice(npc, it->second, cues);
 }
 
 }  // namespace game

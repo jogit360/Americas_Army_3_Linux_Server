@@ -261,6 +261,15 @@ struct ServerPlayerReplicationInfo : ServerActor {
     int32_t m106_grenades = 0;            // M106
     int32_t stun_grenades = 0;            // M84
     int32_t incendiary_grenades = 0;      // AN-M14 TH3
+    // 40 mm rounds for the XM320 (iM433Rounds / iM714Rounds), not counting
+    // the one in the launcher: AA_MCMissionManager gives the role's
+    // iM203FragGrenades - 1 (it comes loaded) and its iM203SmokeGrenades.
+    int32_t m433_rounds = 0;
+    int32_t m714_rounds = 0;
+    // SelectedLoadout (eDefaultLoadoutType: 0 light, 1 standard, 2 heavy):
+    // the ammo and grenades the role's kit gets (AA_MCMissionManager; retail
+    // Bridge AI capture: the user's heavy pick, 8 magazines).
+    uint8_t selected_loadout = 1;
     // bHasReviveKit: an IFAK in the pouch (AA_InventoryContainer_Pouch_IFAK
     // sets it; retail sends True at spawn). The client's treat prompt needs it.
     bool has_revive_kit = false;
@@ -293,6 +302,20 @@ struct ServerPlayerReplicationInfo : ServerActor {
     bool    b_dead  = false;            // AA_PlayerReplicationInfo.bIsDead (retail t=81.83)
     bool    b_incapacitated = false;    // AA_PlayerReplicationInfo.bIsIncapacitated (doc sec 35)
     int32_t i_died  = 0;                // AA_PlayerReplicationInfo.iDied
+    // Scoreboard stats (doc sec 45; retail Bridge AI user session): the
+    // in-game scoreboard's Mission / Neutralized / KIA columns and the XP
+    // the round's after-action screen totals. "Round" ones reset each round.
+    int32_t neutralized = 0;            // iNeutralizedEnemy
+    int32_t round_neutralized = 0;      // iRoundEnemyNeutralizedCount
+    int32_t confirmed_neutralized = 0;  // iConfirmedNeutralizedEnemy (the scoreboard's Neutralized column)
+    int32_t secured_enemy = 0;          // iSecuredEnemy (secured + confirmed)
+    int32_t round_confirmed = 0;        // iRoundConfirmedNeutralizedEnemy
+    int32_t objectives_completed = 0;   // iObjectivesCompleted
+    int32_t medic_active = 0, medic_passive = 0, medic_recap = 0;  // iMedic*Treatment / iMedicRecapacitation
+    int32_t rounds_played = 0, rounds_won = 0, rounds_lost = 0;    // iMatchRounds*
+    int32_t xp_courage = 0, xp_duty = 0, xp_respect = 0;           // fpRound{PersonalCourage,Duty,Respect}XP
+    int32_t xp_round_honor = 0;         // fpRoundHonorXP
+    int32_t match_total_score = 0;      // fpCurrentMatchTotalScore
     int32_t team_index = -1;            // -1 = spectator / unassigned
     uint8_t ping = 0;
     bool    b_is_spectator = false;
@@ -332,9 +355,13 @@ struct ServerPlayerController : ServerActor {
     // ClientNotifyScoringEventDetails(7, 32, +10) (retail 13:42:54).
     uint32_t npc_kill_serial = 0;
     std::string last_npc_kill;
+    // This round's AA_MP_PlayerRoundStatistics, filled as it's played and
+    // published on the SteamStatManager at round end (doc sec 45).
+    PlayerRoundStats live_round;
     // Where the next spawn goes instead of the fire team's start (a co-op
     // reinforcement point).
     bool has_respawn_spot = false;
+    bool reinforcement_spawn = false;    // this spawn is a reinforcement (bRespawningPlayer)
     float respawn_spot[3] = {0, 0, 0};
     int32_t respawn_spot_yaw = 0;
     struct ServerSteamStatManager* stat_manager = nullptr; // this client's Ch=3 actor
@@ -404,6 +431,7 @@ struct ServerPawn : ServerActor {
     // bPlayZipTie) or a dead one confirmed; npc_credited: the neutralization
     // has been credited (at the incapacitation).
     bool body_identified = false, zip_tie = false, npc_credited = false;
+    uint8_t last_hit_weapon = 0;      // World::StatWeapon of the last player hit (kills by weapon)
     struct ServerPawn* npc_last_hit_by = nullptr;   // NPC: who last shot it (it turns to face them)
     double npc_last_hit_at = -100.0;
     uint32_t last_hit_by_client = 0;  // the player whose shot last hurt it (kill credit)
@@ -495,6 +523,7 @@ struct ServerPawn : ServerActor {
     struct GraphStep { double at; int graph; uint8_t cur, dst; };
     std::vector<GraphStep> graph_steps;
     double vault_gravity_at = -1.0;   // bSimulateGravity back on (vault landing)
+    double vault_busy_until = -1.0;   // AA_Pawn.SetBusyVaultMantling (2 s)
     // Hold breath (doc sec 32): Asphyx fills 0..100 while held; full forces
     // the end (ClientEndHoldBreath(bForceCancel)) and bAsphyxiating until it
     // drains back under half. Rates are a guess -- no retail sample yet.
@@ -580,6 +609,14 @@ struct ServerPawn : ServerActor {
         graphs[i].destination[0] = dst; graphs[i].destination[1] = 0;
     }
     float movement_speed_modifier = 0.8852f;
+    // Encumbrance (doc sec 44): the rifle and its mods (kg, class Weight
+    // defaults), one magazine's weight, the spawn time (retail adds its
+    // preloaded grenade set 4.66 s on), and the weight last sent as
+    // AA_InventoryManager.CurrentWeight.
+    float kit_weight = 0.0f;
+    float mag_weight = 0.45f;
+    double spawned_at = 0.0;
+    float carried_weight = -1.0f;
     int32_t original_owning_team = 0;          // Actor.iOriginalOwningTeamIndex
     const ServerActor* proxy = nullptr;        // AA_Pawn.PlayerProxy
 
@@ -612,6 +649,39 @@ struct ServerPawn : ServerActor {
     // Held past the fuse: AA_ThrowWeapon.HolderDied -> ClientHolderDied().
     const ServerActor* holder_died_grenade = nullptr;
     uint32_t holder_died_serial = 0;
+
+    // XM320 grenade launcher (doc sec 41): AA_Weapon.CurrentFireMode 1.
+    // `launcher` is the AA_WeaponModWeapon_XM320 on the rifle, `launcher_mag`
+    // its one 40 mm AA_AmmoContainer (PreloadedMag / LoadedMagazine[1]),
+    // reloaded in place as retail does (AA_BulletWeapon ModReloading).
+    const ServerActor* launcher = nullptr;
+    const ServerActor* launcher_mag = nullptr;
+    uint8_t fire_mode = 0;               // CurrentFireMode on the server
+    int fire_mode_target = -1;           // a grip transition running to this mode
+    double fire_mode_done_at = -1.0;
+    bool launcher_loaded = false;        // ChamberedRound[1] holds a round
+    int launcher_ammo = 0;               // DesiredAmmoIndex: 0 M433, 1 M714
+    int launcher_loaded_ammo = 0;        // the type in the launcher
+    int launcher_range = 0;              // WeaponZeroingIdx: 0..5 = 50..300 m
+    double launcher_reload_at = -1.0;    // reload started (ModReload state)
+    int launcher_reload_stage = 0;
+    bool launcher_reload_full = false;   // a round was still in (ModReloadFull)
+    uint32_t grip_complete_serial = 0;   // AA_Weapon.ClientTransitionToForwardGripComplete()
+    uint32_t launcher_chamber_serial = 0;  // XM320.ClientSetChamberedRound(class)
+    uint32_t launcher_counts_serial = 0;   // PC.ClientAdvancedInventoryUpdateAmmoMagazineCounts()
+
+    // Picked-up rifles (doc sec 46; retail Bridge AI user session
+    // 13:30:12): the HUD notices to send, and a switch between two rifles
+    // in progress (graph 4 151 -> 79, the old one to its chest slot).
+    uint32_t pickup_serial = 0;
+    uint8_t pickup_ammo_type = 17, pickup_weapon_type = 11;
+    uint32_t pickup_class = 0;           // the rifle's class (AA3Baseline export) for the message
+    const ServerActor* previous_weapon = nullptr;
+    uint32_t previous_weapon_serial = 0; // InventoryManager.ClientSetPreviousWeapon
+    const ServerActor* switch_from = nullptr;
+    const ServerActor* switch_to = nullptr;
+    double switch_at = -1.0;
+    int switch_stage = 0;
 
     // Runtime animation/stance state (Pawn.*, RepIndex 37-43, unchanged by doc sec 19). No
     // defaultproperties for these — they're live state, not spawn-time

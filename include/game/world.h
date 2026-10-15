@@ -2,6 +2,7 @@
 #define AA3_WORLD_H
 
 #include <array>
+#include <deque>
 #include <map>
 #include <memory>
 #include <string>
@@ -136,6 +137,12 @@ public:
     // AA_Pawn.ServerStartMoveToTarget (vault/mantle: the client picks the
     // target), ServerClimbLadder / ServerEndClimbLadder (doc sec 33).
     void StartMoveToTarget(ServerPawn* pawn, const float target[3], bool ladder = false);
+    // AA_Pawn.TryVaultOrMantle(True) on the server (ServerTryVault, and
+    // FinishVaultMantleMoveToTarget after the move): the obstacle ahead,
+    // measured from the map, picks Vault / Mantle / Climb (crouched
+    // variants without headroom; out of a sprint the combat step or the
+    // hood slide). False if there's nothing to get over.
+    bool TryVaultOrMantle(ServerPawn* pawn);
     void ClimbLadder(ServerPawn* pawn, bool on);
     // Withdraw (MEDEVAC) while incapacitated: dies as usual (doc sec 35).
     bool Withdraw(ServerPawn* pawn);
@@ -168,6 +175,12 @@ public:
     // the matching weapon -- and PerkAmount down by one; emptied, it's gone.
     // False if nothing was taken.
     bool UseES2Object(ServerPlayerController& pc, const ServerActor* obj);
+    // ServerRepExec('Pickup', dropped rifle): the rifle with its magazine
+    // into the player's inventory, on the right shoulder (doc sec 46).
+    bool PickUpWeapon(ServerPlayerController& pc, const ServerActor* obj);
+    // ServerSetCurrentWeapon(other rifle) with a rifle in hand: holster one,
+    // draw the other. False if it isn't a switch between two rifles.
+    bool SwitchRifle(ServerPawn* pawn, const ServerActor* to);
 
     // Grenades (doc sec 37; retail GamePlayPCAP_Legit_Server t=436-510).
     // EInventoryType of a pawn's AA_ThrowWeapon (0 if `a` is none).
@@ -193,8 +206,58 @@ public:
         bool resting = false, exploded = false, gone = false;
         bool npcs_told = false;                  // NotifyGrenadeBounced sent to nearby NPCs
         double next_burn = 0.0;
+        // A 40 mm round: goes off where it hits once armed (ArmingTime
+        // after launch); before that it bounces off as a dud.
+        bool impact = false, dud = false;
+        double arm_at = 0.0;
+        Vec3 launch;                             // where it left the muzzle
     };
     const std::vector<ThrownGrenade>& ThrownGrenades() const { return thrown_; }
+
+    // Sounds the server plays (doc sec 42). Retail's server plays the
+    // enemies' gunfire, bullet impacts, fly-bys and radio chatter with
+    // Actor.PlaySound, which reaches each player as
+    // PlayerController.ClientHearSound (828 in the Bridge AI user session,
+    // 2026-10-12), and near misses as AA_PlayerController.
+    // ClientSuppressedByFire (the bullet crack). The protocol sends each
+    // event to every player in `radius` of it, occlusion traced from them.
+    struct SoundEvent {
+        uint64_t seq = 0;
+        double at = 0.0;
+        const char* pkg = "";                    // the SoundCue: package + NetIndex in it
+        uint32_t net = 0;
+        const ServerActor* source = nullptr;     // SourceActor (None if not open to that player)
+        Vec3 loc;                                // SourceLocation
+        bool stop_when_destroyed = false, delay = false;
+        float priority = 0.0f;                   // PriorityAdjustment
+        float radius = 0.0f;
+        const ServerPawn* listener = nullptr;    // a crack for this player only (`source` the shooter)
+    };
+    const std::deque<SoundEvent>& SoundEvents() const { return sound_events_; }
+    uint64_t SoundSeq() const { return sound_seq_; }
+    // Is the line between two points blocked by the map?
+    bool Occluded(const Vec3& from, const Vec3& to) const;
+    // The AI co-op mission briefing for a team's players at the round's
+    // first spawn (S_AIMissionAudio <Map>.<Team>COMissionBriefingCue; retail
+    // ClientPlaySound at t=21.16), 0 if the map has none.
+    uint32_t BriefingSoundIndex(int32_t team) const;
+
+    // XM320 grenade launcher under the rifle (doc sec 41; no retail
+    // grenadier capture -- built from the scripts, the soldier state graph
+    // in Sold_Tech.upk and the animation lengths in Mod_Grenade.upk).
+    // AA_Weapon.ServerSetWeaponFireMode(mode): 1 raises the launcher, 0
+    // goes back to the rifle. False if refused (no launcher, reloading).
+    bool SetWeaponFireMode(ServerPawn* pawn, uint8_t mode);
+    // Weapon.ServerStartFire(1) with the launcher up: a 40 mm round leaves
+    // along the view, raised for the sight's range setting.
+    void FireLauncher(ServerPawn& pawn);
+    // ServerTryToReload with the launcher up (AA_Weapon.Reload: RT_WeaponMod).
+    bool BeginLauncherReload(ServerPawn* pawn);
+    // AA_Weapon.ServerWeaponModLoadAmmo("M433"/"M714"): switch round type
+    // and reload with it.
+    void LauncherLoadAmmo(ServerPawn* pawn, const std::string& type);
+    // ServerCycleWeaponZeroingRange(bCycleUp) / ServerResetWeaponModZeroing.
+    void CycleLauncherRange(ServerPawn* pawn, bool up, bool reset = false);
 
     // Carried objective (the briefcase of a co mission; Bridge AI capture
     // 2026-10-12): the briefcase and dropped-briefcase actors, opened to
@@ -301,6 +364,23 @@ private:
     void BuildRailMods(ServerPlayerController& pc, std::vector<std::unique_ptr<ServerRoundActor>>& items,
                        ServerRoundActor& weapon, uint32_t default_sight_cls);
     void UpdateGrenades(double dt);
+    void UpdateLauncher();
+    void UpdateRifleSwitch(ServerPawn& p);
+    void RifleInHand(ServerPawn& p, ServerRoundActor& to);
+    void UpdateEncumbrance(ServerPawn& p);
+    // Round statistics (doc sec 45): the soldier's weapon for a stat, and
+    // the counts as things happen.
+    enum StatWeapon : uint8_t { kStatNone, kStatM4A1, kStatM16A4, kStatDMR, kStatM249, kStatM320, kStatM67,
+                                kStatM84, kStatM14, kStatKNP, kStatMSP, kStatLMK };
+    PlayerRoundStats* LiveStats(const ServerPawn* p);
+    uint8_t RifleStat(const ServerPawn& p);
+    void StatShot(ServerPawn& p);
+    void StatHit(ServerPawn& shooter, ServerPawn& victim, int zone, uint8_t weapon);
+    void StatNeutralized(ServerPlayerController& pc, ServerPawn& victim);
+    void PublishRoundStats(int32_t winner);
+    void ResetRoundStats();
+    void SetUpLauncher(ServerPlayerController& pc, std::vector<std::unique_ptr<ServerRoundActor>>& items,
+                       ServerRoundActor& weapon, ServerRoundActor& launcher);
     // Wounds, bleeding and treatment (src/game/medic.cpp).
     void UpdateInjuries(double dt);
     void AddWound(ServerPawn& victim, int location, float bleed, const std::string& attacker);
@@ -314,6 +394,15 @@ private:
     void ApplyDamage(ServerPawn& victim, ServerPawn* instigator, float damage, uint32_t damage_class,
                      const Vec3& at, const Vec3& dir);
     std::vector<ThrownGrenade> thrown_;
+    std::deque<SoundEvent> sound_events_;
+    uint64_t sound_seq_ = 0;
+    void PlaySound(const char* pkg, uint32_t net, const ServerActor* source, const Vec3& loc, bool stop_when_destroyed,
+                   bool delay, float priority, float radius);
+    // An enemy round's sounds: its report, then a crack for anyone it
+    // passed close by, the impact on whoever it hit or the fly-by where
+    // it ended up.
+    void BulletSounds(ServerPawn& shooter, const Vec3& start, const Vec3& end, const ServerPawn* victim, bool last_round,
+                      int weapon);
     struct CarriedObjective {
         bool active = false;
         std::string factory_pkg;
@@ -386,6 +475,7 @@ private:
         int rounds = 30, mag_size = 30;
         bool lmk = false, marksman = false;
         double last_supp_reaction = -100.0, supp_start = -100.0;
+        double last_voice = -100.0;             // PlayNPCSoundCue's 5 s anti-spam
         int buzzes_here = 0;
         double last_frag = -100.0, last_smoke = -100.0;
         int frags = 3, smokes = 3;
@@ -458,6 +548,10 @@ private:
     bool NpcSmokeBlocks(const Vec3& a, const Vec3& b) const;
     bool NpcCanSee(const ServerPawn& npc, const ServerPawn& target) const;
     void NpcShoot(ServerPawn& npc, NpcBrain& b, const Vec3& at_point);
+    // AA_NPCBaseController.PlayNPCSoundCue: one of `cues` (S_Char_VO_Soldier
+    // NetIndex) from the NPC, at most once in 5 s.
+    void NpcVoice(ServerPawn& npc, NpcBrain& b, std::initializer_list<uint32_t> cues);
+    void NpcVoice(ServerPawn& npc, std::initializer_list<uint32_t> cues);
     const FiringPos* NpcFP(const NpcBrain& b) const {
         return b.cur_fp >= 0 && static_cast<size_t>(b.cur_fp) < npc_firing_positions_.size()
                    ? &npc_firing_positions_[static_cast<size_t>(b.cur_fp)] : nullptr;

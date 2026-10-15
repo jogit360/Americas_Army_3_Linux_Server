@@ -968,6 +968,14 @@ void ProtocolHandler::DecodeActorBunch(uint32_t client_id, uint32_t ch_index,
             LOG_INFO("Client %u: grenade away, weapon -> ch %u", client_id, weapon_ch);
             return;
         }
+        // One rifle for another (a picked-up one; doc sec 46): the switch
+        // runs on the server's clock, ClientNotifyChangedWeapon goes out with
+        // its 0.2 s step.
+        if (own_pawn && old_ch && world_->SwitchRifle(own_pawn, on_channel(weapon_ch))) {
+            sess.current_weapon_ch = weapon_ch;
+            LOG_INFO("Client %u: rifle switch ch %u -> ch %u", client_id, old_ch, weapon_ch);
+            return;
+        }
         sess.current_weapon_ch = weapon_ch;
         util::BitWriter d;
         BuildClientNotifyChangedWeaponRPC(d, weapon_ch);
@@ -1107,9 +1115,18 @@ void ProtocolHandler::DecodeActorBunch(uint32_t client_id, uint32_t ch_index,
         auto* weapon = const_cast<game::ServerRoundActor*>(a);
         while (reader.GetPos() < bunch_end) {
             uint32_t idx = reader.ReadIntMax(a->max_index);
-            if (idx == 31 || idx == 32) {                   // ServerStartFire / ServerStopFire
-                if (game::ServerPlayerController* pc = world_ ? world_->FindPlayerController(client_id) : nullptr)
-                    world_->SetTrigger(pc->pawn, idx == 31);
+            game::ServerPlayerController* wpc = world_ ? world_->FindPlayerController(client_id) : nullptr;
+            if (idx == 31 || idx == 32) {                   // ServerStartFire / ServerStopFire(byte FireModeNum)
+                // (a bare call -- no parameter bits left -- is mode 0)
+                const uint8_t mode = reader.GetPos() + 9 <= bunch_end && reader.ReadBit()
+                    ? static_cast<uint8_t>(reader.ReadBits(8)) : 0;
+                if (wpc && wpc->pawn) {
+                    if (mode == 1) {                        // the XM320 (its registered fire mode)
+                        if (idx == 31) world_->FireLauncher(*wpc->pawn);
+                    } else {
+                        world_->SetTrigger(wpc->pawn, idx == 31);
+                    }
+                }
                 continue;
             }
             if (idx == 44) {
@@ -1117,7 +1134,26 @@ void ProtocolHandler::DecodeActorBunch(uint32_t client_id, uint32_t ch_index,
                 util::BitWriter d;
                 d.WriteIntMax(45, a->max_index);            // SetWeaponFireModeRecieved()
                 SendActorUpdateBunch(client_id, ch_index, d);
-                LOG_INFO("Client %u: fire mode %u", client_id, mode);
+                const bool took = wpc && world_->SetWeaponFireMode(wpc->pawn, mode);
+                LOG_INFO("Client %u: fire mode %u%s", client_id, mode, took ? "" : " (refused)");
+            } else if (idx == 47) {                         // ServerWeaponModLoadAmmo(string AmmoTypeString)
+                std::string type;
+                if (reader.ReadBit()) {
+                    const int32_t n = static_cast<int32_t>(reader.ReadInt());
+                    if (n < -256 || n > 256) return;
+                    for (int32_t k = 0; k < (n < 0 ? -n : n); ++k) {
+                        uint32_t c = reader.ReadByte();
+                        if (n < 0) c |= static_cast<uint32_t>(reader.ReadByte()) << 8;
+                        if (c) type.push_back(c < 0x80 ? static_cast<char>(c) : '?');
+                    }
+                }
+                LOG_INFO("Client %u: launcher ammo '%s'", client_id, type.c_str());
+                if (wpc) world_->LauncherLoadAmmo(wpc->pawn, type);
+            } else if (idx == 48) {                         // ServerCycleWeaponZeroingRange(bool bCycleUp)
+                const bool up = reader.ReadBit();
+                if (wpc) world_->CycleLauncherRange(wpc->pawn, up);
+            } else if (idx == 49) {                         // ServerResetWeaponModZeroing()
+                if (wpc) world_->CycleLauncherRange(wpc->pawn, false, /*reset=*/true);
             } else if (idx == 65) {
                 uint8_t rof = reader.ReadBit() ? static_cast<uint8_t>(reader.ReadBits(2)) : 0;
                 game::DataValue v; v.kind = game::DataValue::Kind::kByte; v.bits = 2; v.i = rof;
@@ -1132,6 +1168,20 @@ void ProtocolHandler::DecodeActorBunch(uint32_t client_id, uint32_t ch_index,
         return;
     }
 
+    // The own PRI: AA_PlayerReplicationInfo.SetSelectedLoadout(int) (211),
+    // from the mission pre-planner's loadout pick.
+    if (max_index == kPRIMaxIndex) {
+        while (reader.GetPos() < bunch_end) {
+            const uint32_t idx = reader.ReadIntMax(max_index);
+            if (idx != rep::PRI::SetSelectedLoadout) return;
+            const int32_t v = reader.GetPos() < bunch_end && reader.ReadBit()
+                ? static_cast<int32_t>(reader.ReadInt()) : 0;
+            game::ServerPlayerController* pc = world_ ? world_->FindPlayerController(client_id) : nullptr;
+            if (pc && pc->pri && v >= 0 && v <= 2) pc->pri->selected_loadout = static_cast<uint8_t>(v);
+            LOG_INFO("Client %u: SetSelectedLoadout(%d)", client_id, v);
+        }
+        return;
+    }
     if (max_index != kPCMaxIndex) {
         LOG_DEBUG("RX Ch=%u: actor bunch on a non-PC channel (MaxIndex=%u) — "
                   "no client->server fields decoded there yet", ch_index, max_index);
@@ -1511,7 +1561,8 @@ void ProtocolHandler::ApplyPcRpc(uint32_t client_id, ClientSession& sess,
             } else {
                 static_obj = static_cast<uint32_t>(p[1].i);
             }
-            const bool ok = world_->PickUpObjective(*pc, static_obj, obj);
+            // ... or a dropped rifle (doc sec 46).
+            const bool ok = world_->PickUpObjective(*pc, static_obj, obj) || (obj && world_->PickUpWeapon(*pc, obj));
             LOG_INFO("RX client %u: ServerRepExec('Pickup', %s %d) -> %s", client_id,
                      p[1].dynamic ? "ch" : "obj", p[1].i, ok ? "picked up" : "nothing");
             break;
@@ -1564,6 +1615,20 @@ void ProtocolHandler::ApplyPcRpc(uint32_t client_id, ClientSession& sess,
             bool ok = pc && world_ && world_->SetRailMod(*pc, p[0].s, p[1].s, p[2].i);
             LOG_INFO("RX client %u: ServerSetRailMod(%s, %s, %d) -> %s", client_id, p[0].s.c_str(),
                      p[1].s.c_str(), p[2].i, ok ? "set" : "refused");
+            break;
+        }
+        case PcRpc::kServerSetLoadoutPreference: {
+            // AA_InGameUI_MissionRoleSelection: the pick for the role's
+            // weapon goes out as ServerSetLoadoutPreference(index, loadout,
+            // top rail); retail's mission manager makes it the PRI's
+            // SelectedLoadout at spawn (retail Bridge AI capture 13:22:44:
+            // role 10 picked, then (9, 2, 2) -> SelectedLoadout 2). The
+            // join-time burst for every role comes before a role is held.
+            if (pc && pc->pri && pc->pri->assigned_class_role_index >= 0 && p[1].i >= 0 && p[1].i <= 2) {
+                pc->pri->selected_loadout = static_cast<uint8_t>(p[1].i);
+                LOG_INFO("RX client %u: loadout %s", client_id,
+                         p[1].i == 0 ? "light" : p[1].i == 2 ? "heavy" : "standard");
+            }
             break;
         }
         case PcRpc::kServerSetPlayerReady:
@@ -1632,6 +1697,11 @@ void ProtocolHandler::PossessPawn(uint32_t client_id, ClientSession& sess,
     sess.holder_died_sent = pawn.holder_died_serial;
     sess.vault_sent = pawn.vault_finish_serial;
     sess.breath_end_sent = pawn.breath_end_serial;
+    sess.grip_complete_sent = pawn.grip_complete_serial;
+    sess.launcher_counts_sent = pawn.launcher_counts_serial;
+    sess.launcher_chamber_sent = 0;                 // the loaded round goes out once the launcher is open
+    sess.pickup_sent = pawn.pickup_serial;
+    sess.previous_weapon_sent = pawn.previous_weapon_serial;
     util::BitWriter d;
     // Retail R22 opens with the weapon-ready / posture notifications that
     // initialize the client's posture state (doc sec 30).
@@ -1665,6 +1735,16 @@ void ProtocolHandler::PossessPawn(uint32_t client_id, ClientSession& sess,
                       level.package.compare(level.package.size() - 8, 8, "_Volumes") == 0);
         if (extra)
             BuildClientUpdateLevelStreamingStatusRPC(streaming, level.package, true, true, true);
+    }
+    // The AI co-op briefing plays with the round's first spawn (retail
+    // t=21.16, the level-streaming bunch; again at t=89.21 for round 2),
+    // the squad leader's radio call (S_AIMissionAudio Radio.SL50) 10.5 s on.
+    if (!respawn && world_ && pc.pri) {
+        if (const uint32_t brief = world_->BriefingSoundIndex(pc.pri->team ? pc.pri->team->team_index : 0)) {
+            BuildClientPlaySoundRPC(streaming, brief);
+            sess.radio_sound = world_->ObjectIndex("S_AIMissionAudio", 358);
+            sess.radio_due_us = NowUs() + 10500000;
+        }
     }
     if (streaming.GetBitCount()) SendActorUpdateBunch(client_id, kPCChannel, streaming);
 
@@ -1716,6 +1796,11 @@ void ProtocolHandler::PossessPawn(uint32_t client_id, ClientSession& sess,
     if (respawn) {
         BuildClientGotoStateRPC(g, "PlayerWalking");
         BuildClientSetViewTargetRPC(g, kOwnPawnChannel);
+        // A reinforcement wave: "Squad, move out!" and the Black Hawk
+        // dropping it off (retail t=218.84: US_Radio_Combat_SquadMoveOut,
+        // BH_Helo.BH_Helo_Dropoff_Cue).
+        BuildClientPlaySoundRPC(g, world_->ObjectIndex("S_Char_VO_Soldier", 1135));
+        BuildClientPlaySoundRPC(g, world_->ObjectIndex("S_Map_Airfield", 43));
     }
     SendActorUpdateBunch(client_id, kPCChannel, g);
     if (inventory) {
@@ -2417,6 +2502,153 @@ void ProtocolHandler::Tick(uint64_t now_us) {
             d.WriteIntMax(52, rep::Pawn::kMaxIndex);
             d.WriteBit(true);
             SendActorUpdateBunch(kv.first, kOwnPawnChannel, d);
+        }
+
+        // XM320 (doc sec 41): the grip transition's end on the rifle
+        // (AA_Weapon.ClientTransitionToForwardGripComplete), the chambered
+        // round on the launcher (ClientSetChamberedRound(class), None when
+        // fired) and the 40 mm counts on the PC.
+        if (s.possessed_pawn && s.possessed_pawn->launcher) {
+            const game::ServerPawn* pawn = s.possessed_pawn;
+            const game::ServerActor* rifle = pawn->rifle ? pawn->rifle : pawn->loaded_weapon;
+            auto r_it = rifle ? s.actor_channel.find(rifle) : s.actor_channel.end();
+            if (pawn->grip_complete_serial != s.grip_complete_sent && r_it != s.actor_channel.end() &&
+                ChannelReady(s, r_it->second)) {
+                s.grip_complete_sent = pawn->grip_complete_serial;
+                util::BitWriter d;
+                d.WriteIntMax(43, s.channel_max_index[r_it->second]);
+                SendActorUpdateBunch(kv.first, r_it->second, d);
+            }
+            auto l_it = s.actor_channel.find(pawn->launcher);
+            if (pawn->launcher_chamber_serial != s.launcher_chamber_sent && l_it != s.actor_channel.end() &&
+                ChannelReady(s, l_it->second)) {
+                s.launcher_chamber_sent = pawn->launcher_chamber_serial;
+                util::BitWriter d;
+                d.WriteIntMax(31, s.channel_max_index[l_it->second]);   // ClientSetChamberedRound
+                d.WriteBit(pawn->launcher_loaded);
+                if (pawn->launcher_loaded) {
+                    d.WriteBit(false);
+                    d.WriteIntMax(world_->ObjectIndex("AA3Baseline", 1046), 0x80000000);   // AA_AmmoType_M433
+                }
+                SendActorUpdateBunch(kv.first, l_it->second, d);
+            }
+            if (pawn->launcher_counts_serial != s.launcher_counts_sent && ChannelReady(s, kPCChannel)) {
+                s.launcher_counts_sent = pawn->launcher_counts_serial;
+                util::BitWriter d;
+                d.WriteIntMax(rep::AGP_PC::ClientAdvancedInventoryUpdateAmmoMagazineCounts, kPCMaxIndex);
+                SendActorUpdateBunch(kv.first, kPCChannel, d);
+            }
+        }
+
+        // A picked-up rifle (doc sec 46; retail frame 40852): the HUD's
+        // ammo type in a bunch of its own, then the weapon type and
+        // ReceiveLocalizedMessage(LocalMessage, OptionalObject = its class).
+        // A rifle switch: ClientNotifyChangedWeapon(new, old) and the
+        // InventoryManager's ClientSetPreviousWeapon(old).
+        if (world_ && s.possessed_pawn && ChannelReady(s, kPCChannel)) {
+            game::ServerPawn* own = const_cast<game::ServerPawn*>(s.possessed_pawn);
+            if (own->pickup_serial != s.pickup_sent) {
+                s.pickup_sent = own->pickup_serial;
+                util::BitWriter a;
+                BuildClientSendHUDNotifyAddedInventoryRPC(a, own->pickup_ammo_type, false);
+                SendActorUpdateBunch(kv.first, kPCChannel, a);
+                util::BitWriter m;
+                BuildClientSendHUDNotifyAddedInventoryRPC(m, own->pickup_weapon_type, false);
+                m.WriteIntMax(rep::PC::ReceiveLocalizedMessage, kPCMaxIndex);
+                auto static_obj = [&m](uint32_t idx) {
+                    m.WriteBit(idx != 0);
+                    if (idx) { m.WriteBit(0); m.WriteIntMax(idx, 0x80000000); }
+                };
+                static_obj(world_->ObjectIndex("Engine", 11866));   // class Engine.LocalMessage
+                m.WriteBit(0); m.WriteBit(0); m.WriteBit(0);         // Switch, RelatedPRI_1/2
+                static_obj(world_->ObjectIndex("AA3Baseline", own->pickup_class));
+                SendActorUpdateBunch(kv.first, kPCChannel, m);
+            }
+            if (own->previous_weapon_serial != s.previous_weapon_sent) {
+                auto new_it = s.actor_channel.find(own->switch_to);
+                auto old_it = s.actor_channel.find(own->previous_weapon);
+                auto im_it = s.actor_channel.find(own->inv_manager);
+                if (new_it != s.actor_channel.end() && old_it != s.actor_channel.end()) {
+                    s.previous_weapon_sent = own->previous_weapon_serial;
+                    util::BitWriter d;
+                    BuildClientNotifyChangedWeaponRPC(d, new_it->second, old_it->second);
+                    SendActorUpdateBunch(kv.first, kPCChannel, d);
+                    if (im_it != s.actor_channel.end()) {
+                        util::BitWriter i;
+                        i.WriteIntMax(33, s.channel_max_index[im_it->second]);   // ClientSetPreviousWeapon(PrevWeapon)
+                        WriteRPCObjectParam(i, old_it->second);
+                        SendActorUpdateBunch(kv.first, im_it->second, i);
+                    }
+                }
+            }
+        }
+
+        // Sounds (doc sec 42): the world's PlaySound events within earshot
+        // as ClientHearSound (unreliable, as retail), occlusion traced from
+        // this player's head; near misses meant for this player as
+        // ClientSuppressedByFire (reliable).
+        if (world_ && s.state == ConnectionState::ESTABLISHED) {
+            const uint64_t seq = world_->SoundSeq();
+            if (s.sound_seq_sent > seq) s.sound_seq_sent = seq;
+            if (!s.possessed_pawn) {
+                s.sound_seq_sent = seq;
+            } else if (seq != s.sound_seq_sent) {
+                const game::ServerPawn* me = s.possessed_pawn;
+                const game::Vec3 ear{me->location[0], me->location[1], me->location[2] + 33.0f - me->body_drop};
+                util::BitWriter hear, crack;
+                for (const auto& e : world_->SoundEvents()) {
+                    if (e.seq <= s.sound_seq_sent) continue;
+                    const uint32_t obj = world_->ObjectIndex(e.pkg, e.net);
+                    if (!obj) continue;
+                    auto src_it = e.source ? s.actor_channel.find(e.source) : s.actor_channel.end();
+                    const uint32_t src_ch = src_it != s.actor_channel.end() ? src_it->second : 0;
+                    if (e.listener) {
+                        // AA_PlayerController.SuppressedByFire reads the
+                        // instigator's location: none, no crack.
+                        if (e.listener != me || !src_ch || me->torn_off) continue;
+                        crack.WriteIntMax(rep::AGP_PC::ClientSuppressedByFire, kPCMaxIndex);
+                        WriteRPCBoolParam(crack, true);                  // bWhippedByEnemy
+                        WriteRPCStaticObjectParam(crack, obj);           // SoundToPlay
+                        crack.WriteBit(true);                            // HitLocation
+                        WriteCompressedVector(crack, e.loc.x, e.loc.y, e.loc.z);
+                        WriteRPCObjectParam(crack, src_ch);              // CrackInstigator
+                        continue;
+                    }
+                    const float dx = e.loc.x - ear.x, dy = e.loc.y - ear.y, dz = e.loc.z - ear.z;
+                    const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+                    if (dist > e.radius) continue;
+                    // Traced to just short of the source (an impact sits on its surface).
+                    const float back = dist > 16.0f ? (dist - 8.0f) / dist : 0.0f;
+                    const bool occluded = back > 0.0f &&
+                        world_->Occluded(ear, game::Vec3{ear.x + dx * back, ear.y + dy * back, ear.z + dz * back});
+                    hear.WriteIntMax(rep::AGP_PC::ClientHearSound, kPCMaxIndex);
+                    WriteRPCStaticObjectParam(hear, obj);                // ASound
+                    WriteRPCObjectParam(hear, src_ch);                   // SourceActor
+                    const bool any = e.loc.x != 0.0f || e.loc.y != 0.0f || e.loc.z != 0.0f;
+                    hear.WriteBit(any);                                  // SourceLocation
+                    if (any) WriteCompressedVector(hear, e.loc.x, e.loc.y, e.loc.z);
+                    WriteRPCBoolParam(hear, e.stop_when_destroyed);
+                    WriteRPCBoolParam(hear, occluded);                   // bIsOccluded
+                    WriteRPCBoolParam(hear, e.delay);                    // bDistanceDelaySound
+                    WriteRPCFloatParam(hear, e.priority);                // PriorityAdjustment
+                    // AA3's optional SwapInfoClass: its Send bit (None).
+                    // Leaving it out made every sound a bit short, and a
+                    // second RPC in the bunch was misread by the client
+                    // (2026-10-14: crashed on "out of virtual memory").
+                    hear.WriteBit(false);
+                }
+                s.sound_seq_sent = seq;
+                if (hear.GetBitCount()) SendActorUpdateBunch(kv.first, kPCChannel, hear, /*reliable=*/false);
+                if (crack.GetBitCount()) SendActorUpdateBunch(kv.first, kPCChannel, crack);
+            }
+            if (s.radio_due_us && NowUs() >= s.radio_due_us) {
+                s.radio_due_us = 0;
+                if (s.possessed_pawn && !s.possessed_pawn->torn_off) {
+                    util::BitWriter d;
+                    BuildClientPlaySoundRPC(d, s.radio_sound);
+                    SendActorUpdateBunch(kv.first, kPCChannel, d);
+                }
+            }
         }
 
         // Reload notices (doc sec 31): ConfirmReload() right away, then the

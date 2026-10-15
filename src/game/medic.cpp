@@ -80,6 +80,9 @@ bool World::StartPassiveTreatment(ServerPawn* medic) {
     const ServerPawn& p = *medic->patient;
     if (!p.bleeding && !p.HasInjury(true) && !p.HasInjury(false)) return false;   // CanBeTreatedBySlow
     medic->passive_treatment = true;
+    if (medic->pri) ++medic->pri->medic_passive;             // doc sec 45
+    if (PlayerRoundStats* s = LiveStats(medic)) ++s->iHealedTeammateWound;
+    if (PlayerRoundStats* s = LiveStats(medic->patient)) ++s->iWoundsTreatedByTeammate;
     return true;
 }
 
@@ -119,6 +122,9 @@ bool World::GiveActiveTreatment(ServerPawn* medic, const std::string& type, cons
     }
     patient->recap_used_own_ifak = own;
     Recapacitate(*patient);
+    if (medic->pri) { ++medic->pri->medic_active; ++medic->pri->medic_recap; }   // doc sec 45
+    if (PlayerRoundStats* s = LiveStats(medic)) ++s->iCapacitatedTeammate;
+    if (PlayerRoundStats* s = LiveStats(patient)) ++s->iRevivedByTeammate;
     LOG_INFO("%s revived %s (%s)", medic->pri ? medic->pri->player_name.c_str() : "?", patient_name.c_str(),
              type.c_str());
     return true;

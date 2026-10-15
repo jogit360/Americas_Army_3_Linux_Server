@@ -246,6 +246,9 @@ void World::EnterPhase(MatchPhase phase) {
             gri_->role_selection_time_remaining = 0;
             break;
         case MatchPhase::kInProgress:
+            ResetRoundStats();                 // doc sec 45
+            for (auto& c : controllers_)       // retail t=21.19 / 89.23: iMatchRoundsPlayed 1, 2
+                if (c->pri && c->pri->OnPlayableTeam()) ++c->pri->rounds_played;
             // Retail frames 368/438: bMatchHasBegun, MPStateName
             // 'MatchInProgress', the mission time limit (420s on Bridge
             // classic) and its countdown, respawn counts.
@@ -422,6 +425,13 @@ void World::EndRound(int32_t winner, const char* reason, ServerPawn* completed_b
                      const std::string& objective) {
     gri_->b_stop_count_down = true;
     gri_->b_match_is_over = true;
+    if (completed_by && completed_by->controller) {        // the extraction (doc sec 45)
+        ServerPlayerController& cpc = *completed_by->controller;
+        ++cpc.live_round.iObjectivesCompleted;
+        ++cpc.live_round.iCarriedObjectiveExtraction;
+        if (cpc.pri) ++cpc.pri->objectives_completed;
+    }
+    PublishRoundStats(winner);
     if (winner == 0 || winner == 1) {
         gri_->team_scores[static_cast<size_t>(winner)].won++;
         gri_->team_scores[static_cast<size_t>(1 - winner)].lost++;
@@ -1047,12 +1057,16 @@ ServerPawn* World::SpawnPawn(ServerPlayerController& pc) {
         reinforcement.yaw = pc.respawn_spot_yaw;
         fsp = &reinforcement;
         pc.has_respawn_spot = false;
+        pc.reinforcement_spawn = true;
+    } else {
+        pc.reinforcement_spawn = false;
     }
     const SpawnPoint& sp = fsp ? *fsp : spawn_points_[static_cast<size_t>(swapped_ ? 1 - team : team)];
     auto pawn = std::make_unique<ServerPawn>();
     pawn->object_index = BaselineIndex(net_index::kPawn);
     pawn->transient     = true;
     pawn->health        = 100.0f;
+    pawn->spawned_at    = clock_;
     pawn->pri           = pc.pri;
     pawn->controller    = &pc;
     pawn->label         = "Pawn:" + pc.pri->player_name;
@@ -1130,6 +1144,116 @@ void World::StartMoveToTarget(ServerPawn* pawn, const float target[3], bool ladd
     pawn->move_to_ladder = ladder;
     for (int k = 0; k < 3; ++k) pawn->vault_target[k] = target[k];
     pawn->vault_finish_at = clock_ + (ladder ? 0.14 : 0.27);
+}
+
+// AA_Pawn.TryVaultOrMantle / GetObstacleHeight / AdvMvmt_StepOverObstacle.
+// Retail finds the obstacle with its AdvMvmt_VaultMantleVolumes; we have
+// the map's geometry instead: a trace ahead at knee height (130 units, 390
+// sprinting) finds its face, one down from above just inside it finds the
+// top. Height over the feet (AA_Pawn defaults): 16-40.12 vault, 40.13-56
+// mantle, 55.1-87.5 climb. No headroom on top (a trace up 2 x 44): the
+// crouched vault/mantle. Sprinting into a vault or mantle keeps the sprint
+// (AdvMvmt_bSprintedIntoVaultMantle): the combat step / hood slide.
+// Animation lengths (Sold_Anims): vault 0.63 s (crouched 0.77), mantle
+// 0.63, climb 1.2 (retail t=157.87: {106} .. {7} 1.2 s on), hood slide
+// 0.5 + 0.47 (retail t=347.65: {165}, {164} +0.48), combat step 0.37.
+bool World::TryVaultOrMantle(ServerPawn* pawn) {
+    if (!pawn || pawn->torn_off || pawn->incapacitated) return false;
+    ServerPawn& p = *pawn;
+    if (p.crouched || p.prone || p.sights || p.on_ladder) return false;
+    if (p.vault_busy_until >= 0.0 && clock_ < p.vault_busy_until) return false;
+    const float yaw_u = static_cast<float>((p.controller ? p.controller->rotation_yaw : p.rotation_yaw) & 0xFFFF);
+    const float yaw = yaw_u * 3.14159265f / 32768.0f;
+    const Vec3 dir{std::cos(yaw), std::sin(yaw), 0.0f};
+    const float foot = p.location[2] - 44.0f;
+    const float reach = p.sprinting ? 390.0f : 130.0f;
+    TraceHit face;
+    for (float up : {10.0f, 25.0f, 45.0f}) {
+        const Vec3 a{p.location[0], p.location[1], foot + up};
+        face = collision_.LineTrace(a, Vec3{a.x + dir.x * reach, a.y + dir.y * reach, a.z},
+                                    CollisionWorld::kBlockTrace);
+        if (face.hit) break;
+    }
+    float height = -1.0f;
+    float top = 0.0f;
+    if (face.hit) {
+        Vec3 n{face.normal.x, face.normal.y, 0.0f};
+        const float nl = std::hypot(n.x, n.y);
+        n = nl > 0.01f ? Vec3{n.x / nl, n.y / nl, 0.0f} : Vec3{-dir.x, -dir.y, 0.0f};
+        for (float in : {10.0f, 5.0f, 3.0f}) {
+            const Vec3 from{face.location.x - n.x * in, face.location.y - n.y * in, foot + 97.5f};
+            const TraceHit down = collision_.LineTrace(from, Vec3{from.x, from.y, foot - 10.0f}, CollisionWorld::kBlockTrace);
+            if (!down.hit) continue;
+            if (down.location.z >= from.z - 0.5f) break;          // a wall: taller than any climb
+            top = down.location.z;
+            height = top - (foot - 2.0f);
+            break;
+        }
+    }
+    enum { kNone, kVault, kMantle, kClimb } kind = kNone;
+    if (height >= 40.13f && height <= 56.0f) kind = kMantle;
+    else if (height >= 16.0f && height <= 40.12f) kind = kVault;
+    else if (height >= 55.1f && height <= 87.5f) kind = kClimb;
+    if (kind == kNone) {
+        // The client found a vault volume we can't see in the geometry:
+        // get over it the plain way (no slide).
+        if (!face.hit && height < 0.0f) {
+            LOG_INFO("%s: vault/mantle with nothing found ahead -- mantling", SoldierName(&p).c_str());
+            height = 48.0f;
+            kind = kMantle;
+            top = foot - 2.0f + height;
+        } else {
+            LOG_INFO("%s: obstacle %.1f high -- nothing to vault", SoldierName(&p).c_str(), height);
+            return false;
+        }
+    }
+    // Headroom on top, just past the edge.
+    const Vec3 edge = face.hit ? face.location : Vec3{p.location[0], p.location[1], 0.0f};
+    const Vec3 probe{edge.x + dir.x * 12.0f, edge.y + dir.y * 12.0f, top + 5.0f};
+    const bool crouch = kind != kClimb &&
+        collision_.LineTrace(probe, Vec3{probe.x, probe.y, probe.z + 88.0f}, CollisionWorld::kBlockTrace).hit;
+    const bool sprinted = p.sprinting && !crouch && kind != kClimb;
+    if (p.sprinting && !sprinted) {                                // ServerStopSprint
+        p.sprinting = false;
+        SetWeaponROF(p, p.selected_rof);
+    }
+    const uint8_t walk = p.tactical ? 10 : 7, crh = p.tactical ? 14 : 1;
+    double length = 0.633;
+    p.graph_steps.clear();
+    p.vault_mantle_height = height;
+    p.b_simulate_gravity = false;
+    const char* what = "";
+    if (kind == kClimb) {
+        what = "climbs";
+        length = 1.2;
+        p.SetGraph(2, 106, 106);
+        p.graph_steps.push_back({clock_ + length, 2, walk, walk});
+    } else if (sprinted) {
+        if (kind == kMantle) {
+            what = "hood-slides over";
+            p.SetGraph(2, 165, 165);
+            p.graph_steps.push_back({clock_ + 0.48, 2, 164, 164});
+            length = 0.97;
+        } else {
+            what = "steps over";
+            p.SetGraph(2, 163, 163);
+            length = 0.37;
+        }
+        p.graph_steps.push_back({clock_ + length, 2, 9, 9});
+    } else {
+        const uint8_t state = kind == kMantle ? (crouch ? 97 : 66) : (crouch ? 96 : 65);
+        what = kind == kMantle ? (crouch ? "mantles (crouched) onto" : "mantles onto")
+                               : (crouch ? "vaults (crouched) over" : "vaults over");
+        if (kind == kVault && crouch) length = 0.767;
+        p.SetGraph(2, state, state);
+        const uint8_t after = crouch ? crh : walk;
+        p.graph_steps.push_back({clock_ + length, 2, after, after});
+        if (crouch) { p.crouched = true; p.ground_speed = 100.0f; }
+    }
+    p.vault_gravity_at = clock_ + length;
+    p.vault_busy_until = clock_ + 2.0;
+    LOG_INFO("%s %s an obstacle %.1f high", SoldierName(&p).c_str(), what, height);
+    return true;
 }
 
 // Ladders as retail (t=227.72 / 232.92): mount -> ClientSlingWeapon(),
@@ -1269,33 +1393,35 @@ void World::ApplyPawnAction(ServerPawn* pawn, PawnAction a, bool arg) {
             p.speed_after = 100.0f;
             break;
         }
-        p.crouched = true;
-        p.sprinting = false;
-        Transition(p, clock_, 118, 1, 0);
-        p.graph_steps.push_back({clock_ + 1.29, 2, 76, 58});   // retail: 1.29s later
-        p.graph_steps.push_back({clock_ + 1.60, 2, 58, 58});   // settled crouch
+        {
+            // Only a running soldier slides into the crouch (SprintToCrouch
+            // 118, CbtSlide; retail's sample: {118->1} .. {76->58} ..
+            // {58->58}). Walking: CbtWalkToCrh 68 / TacWalkToCrh 62; standing
+            // still: CbtStdToCrh 6 / TacStdToCrh 15 to the knee
+            // (Sold_Tech state graph).
+            const float speed = std::hypot(p.velocity[0], p.velocity[1]);
+            const bool running = p.sprinting || speed > 250.0f;
+            p.crouched = true;
+            p.sprinting = false;
+            if (running) {
+                Transition(p, clock_, 118, 1, 0);
+                p.graph_steps.push_back({clock_ + 1.29, 2, 76, 58});   // retail: 1.29s later
+                p.graph_steps.push_back({clock_ + 1.60, 2, 58, 58});   // settled crouch
+            } else if (speed > 20.0f) {
+                if (p.tactical) Transition(p, clock_, 62, 14, 0.5);
+                else Transition(p, clock_, 68, 1, 0.5);
+            } else {
+                if (p.tactical) Transition(p, clock_, 15, 58, 0.6);
+                else Transition(p, clock_, 6, 71, 0.6);
+            }
+        }
         p.SetGraph(3, p.sights ? 21 : 22, 0);
         p.ground_speed = 100.0f;
         break;
-    case PawnAction::kVault: {
-        // Retail t=347.65 (GamePlayPCAP_Legit_Server): VaultMantleHeight,
-        // bSimulateGravity off and graph 2 {165} at once, {164} +0.48s,
-        // gravity back +0.58s, then the movement state. Retail also steers
-        // the pawn over the obstacle with position corrections from its
-        // collision traces; without map geometry the client moves itself
-        // (doc sec 31). 48 = a typical mantle height (retail's was 47.85).
-        const bool was_sprinting = p.sprinting;
-        p.vault_mantle_height = 48.0f;
-        p.b_simulate_gravity = false;
-        p.graph_steps.clear();
-        p.SetGraph(2, 165, 165);
-        p.graph_steps.push_back({clock_ + 0.48, 2, 164, 164});
-        if (was_sprinting) p.graph_steps.push_back({clock_ + 0.95, 2, 9, 9});
-        else p.graph_steps.push_back({clock_ + 0.95, 2, static_cast<uint8_t>(p.tactical ? 10 : 7),
-                                      static_cast<uint8_t>(p.tactical ? 10 : 7)});
-        p.vault_gravity_at = clock_ + 0.58;
+    case PawnAction::kVault:
+        // AA_PlayerController.ServerTryVault -> TryVaultOrMantle(True).
+        TryVaultOrMantle(&p);
         break;
-    }
     case PawnAction::kProne:
         if (p.prone) break;                              // retail t=579.44: {4->75} at 0 .. 45
         p.prone = true;
@@ -1334,16 +1460,15 @@ void World::UpdatePostures(double dt) {
             ++p->ladder_finish_serial;              // ClientFinishLadderMoveToTarget()
         }
         if (p->vault_finish_at >= 0.0 && clock_ >= p->vault_finish_at) {
+            // AA_Pawn.FinishVaultMantleMoveToTarget: ClientFinishVaultMantle-
+            // MoveToTarget(), then the server's own TryVaultOrMantle(True)
+            // (retail t=157.87 was a climb: {106}, {7} 1.2 s on).
             p->vault_finish_at = -1.0;
             p->moving_to_target = false;
-            p->vault_mantle_height = std::max(0.0f, p->vault_target[2] - p->location[2]);
             ++p->vault_finish_serial;
-            p->graph_steps.clear();
-            p->SetGraph(2, 106, 106);
-            p->b_simulate_gravity = false;
-            p->vault_gravity_at = clock_ + 1.2;
-            p->graph_steps.push_back({clock_ + 1.2, 2, 7, 7});
+            TryVaultOrMantle(p);
         }
+        UpdateEncumbrance(*p);
         if (p->vault_gravity_at >= 0.0 && clock_ >= p->vault_gravity_at) {
             p->b_simulate_gravity = true;
             p->vault_gravity_at = -1.0;
@@ -1443,6 +1568,10 @@ void World::FireRound(ServerPawn& pawn) {
         return;
     }
     TraceShot(pawn, *weapon);
+    StatShot(pawn);
+    // Pawn.FlashCount: the other players' clients show and play the shot.
+    pawn.flash_count = static_cast<uint8_t>(pawn.flash_count + 1);
+    if (pawn.flash_count == 0) pawn.flash_count = 1;
     const DataField* ri = mag ? mag->Get(kRoundIndex) : nullptr;
     int64_t drawn = ri ? ri->v.i : 0;
     if (mag && drawn < pawn.mag_rounds) {
@@ -1591,11 +1720,15 @@ void World::DamagePawn(ServerPawn& victim, ServerPawn* shooter, const Vec3& at, 
     // Zone -> eHitLocation and the hit's total: head 100 (no wound, down at
     // once), torso 40, legs 35 -- retail's leg hits (capture 2026-10-11, doc
     // sec 39): ~15 at once and ~20 bled out (100 -> 84.88, HealthTarget 64.96).
+    const bool legs = rel <= -hh * 0.2f;
+    if (shooter && !shooter->is_npc)                          // round statistics (doc sec 45)
+        StatHit(*shooter, victim,
+                rel > hh - 14.0f ? 0 : legs ? (rel > -hh * 0.6f ? 3 : 4) : rel > hh * 0.2f ? 1 : 2,
+                RifleStat(*shooter));
     if (rel > hh - 14.0f) {
         ApplyDamage(victim, shooter, 100.0f, 6464, at, dir);   // AA3Baseline AA_DamageType_Bullet
         return;
     }
-    const bool legs = rel <= -hh * 0.2f;
     if (victim.is_npc) {
         // Enemies take a hit at once, nothing bled out (retail Bridge AI
         // capture 2026-10-12, user session, ~30 NPC hits): upper torso (3)
@@ -1640,8 +1773,8 @@ void World::ApplyDamage(ServerPawn& victim, ServerPawn* shooter, float dmg, uint
     LOG_INFO("%s hit %s for %.0f (health %.0f)", SoldierName(shooter).c_str(), SoldierName(&victim).c_str(), dmg,
              victim.health);
     if (shooter && shooter->controller) victim.last_hit_by_client = shooter->controller->owning_client_id;
-    if (victim.is_npc && shooter) {
-        victim.npc_last_hit_by = shooter;
+    if (shooter) {
+        victim.npc_last_hit_by = shooter;      // (players too: iIncapacitatedByEnemy)
         victim.npc_last_hit_at = clock_;
     }
     if (victim.health <= kIncapacitationHealth) {
@@ -1650,6 +1783,46 @@ void World::ApplyDamage(ServerPawn& victim, ServerPawn* shooter, float dmg, uint
         if (victim.is_npc && dmg >= 100.0f) KillPawn(victim, shooter);
         else Incapacitate(victim, damage_class, SoldierName(shooter));
     }
+    // AA_NPCBaseSoldierController: NotifyIncapacitated -> ascIncapacitated
+    // (Medic); a wound it walks off -> ascInitiallyWounded (Medic,
+    // RequestingSupportAtMyLocation).
+    if (victim.is_npc && !victim.torn_off) {
+        if (victim.incapacitated) NpcVoice(victim, {961});
+        else NpcVoice(victim, {961, 975});
+    }
+}
+
+void World::PlaySound(const char* pkg, uint32_t net, const ServerActor* source, const Vec3& loc,
+                      bool stop_when_destroyed, bool delay, float priority, float radius) {
+    SoundEvent e;
+    e.seq = ++sound_seq_;
+    e.at = clock_;
+    e.pkg = pkg;
+    e.net = net;
+    e.source = source;
+    e.loc = loc;
+    e.stop_when_destroyed = stop_when_destroyed;
+    e.delay = delay;
+    e.priority = priority;
+    e.radius = radius;
+    sound_events_.push_back(e);
+}
+
+bool World::Occluded(const Vec3& from, const Vec3& to) const {
+    return collision_.LineTrace(from, to, CollisionWorld::kBlockTrace).hit;
+}
+
+uint32_t World::BriefingSoundIndex(int32_t team) const {
+    // S_AIMissionAudio: <Map>.GoldCOMissionBriefingCue for team 0 (retail
+    // Bridge AI: the Black-team player heard Bridge.GoldCO, NetIndex 352),
+    // BlackCO for team 1. AI co-op levels only.
+    if (game_mode_level_.find("_ai") == std::string::npos) return 0;
+    static const struct { const char* map; uint32_t gold, black; } kBriefings[] = {
+        {"Bridge", 352, 349}, {"Airfield", 345, 342}, {"Ranch", 364, 361}};
+    for (const auto& b : kBriefings)
+        if (game_mode_level_.rfind(b.map, 0) == 0 || map_name_.rfind(b.map, 0) == 0)
+            return ObjectIndex("S_AIMissionAudio", team == 1 ? b.black : b.gold);
+    return 0;
 }
 
 // AA_Pawn.MovementSpeedModifier as retail sends it while hurt: 0.8852 at
@@ -1672,6 +1845,8 @@ float World::InjuredSpeedModifier(float health) {
 // 1.2 s graph 0 {42 -> 13} + bRagdollTick/bRagdollStuck, which settles the
 // ragdoll into the incapacitated pose (UpdateIncapacitated).
 void World::Incapacitate(ServerPawn& victim, uint32_t damage_class, const std::string& instigator) {
+    if (!victim.is_npc && victim.npc_last_hit_by && victim.npc_last_hit_by->is_npc)
+        if (PlayerRoundStats* s = LiveStats(&victim)) ++s->iIncapacitatedByEnemy;
     if (victim.is_npc) {
         // Retail (Bridge AI capture, ch 262, t=526.26): the killer is told
         // at once (ClientNotifyNeutralizedNME); the NPC lies at Health 25,
@@ -1792,7 +1967,7 @@ void World::CreditNpc(ServerPawn& victim, ServerPawn* killer) {
     if (!kpc) return;
     kpc->last_npc_kill = victim.npc_name;
     ++kpc->npc_kill_serial;
-    if (kpc->pri) kpc->pri->score += 10;
+    StatNeutralized(*kpc, victim);
 }
 
 // Retail (Bridge AI capture frame 12295): pouches None; its weapon slots and
@@ -1849,17 +2024,33 @@ bool World::SecureEnemy(ServerPlayerController& pc, const std::string& name) {
         npc->npc_body_until = clock_ + 18.0;
         StripNpc(*npc);
         ++pc.secured_count;
-        if (pc.pri) pc.pri->score += 30;
+        // Retail t=544.48: iSecuredEnemy and iRoundConfirmedNeutralizedEnemy
+        // +1, Duty +30 and Respect +30 (a confirm: +15 each).
+        ++pc.live_round.iSecuredEnemy;
+        if (pc.pri) {
+            ++pc.pri->secured_enemy; ++pc.pri->round_confirmed;
+            pc.pri->xp_duty += 30; pc.pri->xp_respect += 30;
+            pc.pri->xp_round_honor += 60; pc.pri->match_total_score += 60;
+        }
     } else if (npc->torn_off) {
         ++pc.secured_count;
         ++pc.confirmed_count;
-        if (pc.pri) pc.pri->score += 45;
+        ++pc.live_round.iConfirmedEnemy;
+        if (pc.pri) {
+            ++pc.pri->secured_enemy; ++pc.pri->round_confirmed;
+            pc.pri->xp_duty += 15; pc.pri->xp_respect += 15;
+            pc.pri->xp_round_honor += 30; pc.pri->match_total_score += 30;
+        }
     } else {
         npc->body_identified = false;
         return false;
     }
     ev.secured = pc.secured_count;
     ev.confirmed = pc.confirmed_count;
+    // The player's "Enemy secure!" (retail t=543.69: US_Auto_NMESecure from
+    // the secured enemy, with the EnemyConfirm message).
+    PlaySound("S_Char_VO_Soldier", 931, npc, Vec3{npc->location[0], npc->location[1], npc->location[2]}, false, false,
+              0.0f, 5000.0f);
     LOG_INFO("%s %s %s", pc.pri ? pc.pri->player_name.c_str() : "?", ev.alive ? "secured" : "confirmed", name.c_str());
     secure_events_.push_back(ev);
     if (secure_events_.size() > 64) secure_events_.erase(secure_events_.begin());
@@ -1889,10 +2080,14 @@ void World::KillPawn(ServerPawn& victim, ServerPawn* killer) {
         pc->pri->i_died += 1;
         pc->pri->b_dead = true;
     }
-    if (killer && killer->pri && killer != &victim) {
-        killer->pri->kills += 1;
-        killer->pri->score += 1;
-    }
+    // PRI.Score: one per enemy that dies of this player's hits, at once or
+    // later (retail: +1 at a headshot neutralization, nothing for one
+    // downed, +1 when a downed one died; t=121.35 ... 754.58).
+    ServerPlayerController* credit = killer && killer->controller ? killer->controller
+        : victim.is_npc ? FindPlayerController(victim.last_hit_by_client) : nullptr;
+    if (killer && killer->pri && killer != &victim) killer->pri->kills += 1;
+    if (victim.is_npc && credit && credit->pri) credit->pri->score += 1;
+    else if (!victim.is_npc && killer && killer->pri && killer != &victim) killer->pri->score += 1;
     // An enemy NPC: whoever last hurt it gets the neutralization notice
     // (unless it went down first); the body stays ~60 s.
     if (victim.is_npc) {
@@ -1955,6 +2150,7 @@ void World::SetTrigger(ServerPawn* pawn, bool down) {
     if (!pawn) return;
     if (pawn->incapacitated) { pawn->trigger_held = false; return; }
     if (!down) { pawn->trigger_held = false; return; }
+    if (pawn->fire_mode != 0 || pawn->fire_mode_target >= 0) return;      // the XM320 is up (or coming up)
     for (const auto& j : reloads_) if (j.pawn == pawn) return;            // initial reload
     for (const auto& j : deliberate_reloads_) if (j.pawn == pawn) return;
     ServerRoundActor* weapon = FindInventory(pawn, pawn->loaded_weapon);
@@ -1973,6 +2169,11 @@ void World::SetTrigger(ServerPawn* pawn, bool down) {
 // magazine's RoundIndex = 0 at +1.9s; CurrentROF back at +3.8s; graph 4
 // {79->79} (ready) at +4.0s. No magazine swap in that sample.
 void World::BeginReload(ServerPawn* pawn) {
+    if (pawn && pawn->launcher && (pawn->fire_mode == 1 || pawn->fire_mode_target >= 0)) {
+        // AA_Weapon.Reload: in the weapon mod's fire mode it's RT_WeaponMod.
+        if (!BeginLauncherReload(pawn)) ++pawn->confirm_reload_serial;
+        return;
+    }
     if (!pawn || !pawn->loaded_weapon || pawn->incapacitated) return;
     if (!pawn->pri) return;
     bool any = false;                            // a magazine left to load (AdvancedHasAmmoMag)
@@ -2295,6 +2496,16 @@ bool World::BindPackageMap(const engine::MapManifest& manifest,
         }
         if (have_actors) {
             map_actors_ = Instantiate(placed, {});
+            // The level's WorldInfo (retail sends its WorldGravityZ, e.g.
+            // Bridge -750): grenades and 40 mm rounds fall by it on every
+            // client, so the server's flights must too.
+            for (const auto& a : map_actors_)
+                if (a->class_name == "WorldInfo")
+                    if (const DataField* gz = a->Get(24))
+                        if (gz->v.kind == DataValue::Kind::kFloat && world_info_) {
+                            world_info_->world_gravity_z = gz->v.f;
+                            LOG_INFO("World gravity %.0f (the level's WorldInfo)", gz->v.f);
+                        }
             LOG_INFO("Map actors: %zu from %s", map_actors_.size(),
                      bundle ? bundle->MapName().c_str() : manifest.url.c_str());
         }
@@ -2445,6 +2656,8 @@ void World::Update(double delta_time) {
     UpdateMatch(delta_time);
     UpdateReloads();
     UpdateGrenades(delta_time);
+    UpdateLauncher();
+    while (!sound_events_.empty() && clock_ - sound_events_.front().at > 2.0) sound_events_.pop_front();
     UpdateInjuries(delta_time);
     UpdatePostures(delta_time);
     UpdateIncapacitated(delta_time);

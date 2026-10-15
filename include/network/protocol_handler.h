@@ -101,6 +101,11 @@ struct ClientSession {
     uint32_t match_actor_serial_seen = 0;  // World::MatchActorSerial() of the open ES2 set
     uint64_t next_wait_state_us = 0;       // next ClientGotoState('WaitingForMatchStart')
     uint32_t confirm_reload_sent = 0, mag_count_sent = 0;  // ServerPawn reload serials sent
+    uint32_t grip_complete_sent = 0, launcher_chamber_sent = 0, launcher_counts_sent = 0;  // XM320 notices sent
+    uint64_t sound_seq_sent = 0;
+    uint32_t pickup_sent = 0, previous_weapon_sent = 0;   // picked-up rifles (doc sec 46)          // World::SoundEvents delivered up to here (doc sec 42)
+    uint64_t radio_due_us = 0;            // the squad leader's radio call after the briefing
+    uint32_t radio_sound = 0;
     uint32_t breath_end_sent = 0;                           // ServerPawn::breath_end_serial sent
     uint32_t hit_sent = 0, sling_sent = 0, vault_sent = 0, ladder_sent = 0;  // ServerPawn notice serials sent
     uint32_t switch_best_sent = 0;                          // ServerPawn.switch_best_serial sent

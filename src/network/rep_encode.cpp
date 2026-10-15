@@ -452,6 +452,36 @@ uint32_t EncodePRIRep(BitWriter& w, const ServerPlayerReplicationInfo& cur,
         w.WriteIntMax(rep::PRI::iDied, M); w.WriteInt(static_cast<uint32_t>(cur.i_died)); ++n;
     }
     float_field(rep::PRI::Score, cur.score, prev ? &prev->score : nullptr);
+    // Scoreboard stats (doc sec 45): sent when they change; zero, the class
+    // default, stays off the open.
+    {
+        auto stat = [&](uint32_t idx, int32_t cur_v, const int32_t* prev_v, bool as_float) {
+            if (prev_v ? *prev_v == cur_v : cur_v == 0) return;
+            w.WriteIntMax(idx, M);
+            if (as_float) WriteFloatProp(w, static_cast<float>(cur_v));
+            else w.WriteInt(static_cast<uint32_t>(cur_v));
+            ++n;
+        };
+#define AA3_STAT(idx, f, fl) stat(rep::PRI::idx, cur.f, prev ? &prev->f : nullptr, fl)
+        AA3_STAT(iNeutralizedEnemy, neutralized, false);
+        AA3_STAT(iRoundEnemyNeutralizedCount, round_neutralized, false);
+        AA3_STAT(iConfirmedNeutralizedEnemy, confirmed_neutralized, false);
+        AA3_STAT(iSecuredEnemy, secured_enemy, false);
+        AA3_STAT(iRoundConfirmedNeutralizedEnemy, round_confirmed, false);
+        AA3_STAT(iObjectivesCompleted, objectives_completed, false);
+        AA3_STAT(iMedicActiveTreatment, medic_active, false);
+        AA3_STAT(iMedicPassiveTreatment, medic_passive, false);
+        AA3_STAT(iMedicRecapacitation, medic_recap, false);
+        AA3_STAT(iMatchRoundsPlayed, rounds_played, false);
+        AA3_STAT(iMatchRoundsWon, rounds_won, false);
+        AA3_STAT(iMatchRoundsLost, rounds_lost, false);
+        AA3_STAT(fpRoundPersonalCourageXP, xp_courage, true);
+        AA3_STAT(fpRoundDutyXP, xp_duty, true);
+        AA3_STAT(fpRoundRespectXP, xp_respect, true);
+        AA3_STAT(fpRoundHonorXP, xp_round_honor, true);
+        AA3_STAT(fpCurrentMatchTotalScore, match_total_score, true);
+#undef AA3_STAT
+    }
 
 
     // PlayerID, the soldier record and PRI.Team (doc sec 27). Team is an
@@ -491,6 +521,13 @@ uint32_t EncodePRIRep(BitWriter& w, const ServerPlayerReplicationInfo& cur,
     count_field(rep::PRI::iStunGrenades, cur.stun_grenades, prev ? &prev->stun_grenades : nullptr);
     count_field(rep::PRI::iIncendiaryGrenades, cur.incendiary_grenades,
                 prev ? &prev->incendiary_grenades : nullptr);
+    count_field(rep::PRI::iM433Rounds, cur.m433_rounds, prev ? &prev->m433_rounds : nullptr);
+    if (prev ? prev->selected_loadout != cur.selected_loadout : cur.selected_loadout != 0) {
+        w.WriteIntMax(rep::PRI::SelectedLoadout, M);       // eDefaultLoadoutType: 2 bits
+        w.WriteBits(cur.selected_loadout, 2);
+        ++n;
+    }
+    count_field(rep::PRI::iM714Rounds, cur.m714_rounds, prev ? &prev->m714_rounds : nullptr);
     if (prev ? prev->has_revive_kit != cur.has_revive_kit : cur.has_revive_kit) {   // retail: True at spawn only
         w.WriteIntMax(rep::PRI::bHasReviveKit, M); w.WriteBit(cur.has_revive_kit); ++n;
     }

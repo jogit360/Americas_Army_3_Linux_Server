@@ -40,7 +40,8 @@ td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
 <div class="meta" id="meta">loading…</div>
 <div class="wrap"><table>
 <thead><tr><th>Player</th><th>Status</th><th class="num">Time</th>
-<th class="num">Team</th><th class="num">Shots</th><th class="num">Hits</th>
+<th class="num">Team</th><th class="num">Score</th><th class="num">Neutralized</th>
+<th class="num">Secured</th><th class="num">KIA</th><th class="num">Honor XP</th><th class="num">Shots</th><th class="num">Hits</th>
 <th class="num">Kills</th><th class="num">Headshots</th><th class="num">Objectives</th>
 <th class="num">Rounds won</th><th class="num">Distance (uu)</th><th class="num">Sprints</th></tr></thead>
 <tbody id="rows"></tbody></table></div>
@@ -59,14 +60,16 @@ async function refresh() {
       `${d.players.filter(p => p.online).length} online`;
     const tb = document.getElementById("rows"); tb.replaceChildren();
     for (const p of d.players) {
-      const r = p.round || {}, m = p.match || {};
+      const r = p.round || {}, m = p.match || {}, s = p.scoreboard || {};
       const tr = document.createElement("tr");
       tr.append(cell(p.name || `client ${p.client_id}`),
         cell(p.online ? "online" : "left", p.online ? "on" : "off"),
         cell(hms(p.seconds_played), "num"), cell(p.team >= 0 ? p.team : "–", "num"),
+        cell(s.score ?? 0, "num"), cell(s.neutralized ?? 0, "num"), cell(s.secured ?? 0, "num"),
+        cell(s.kia ?? 0, "num"), cell(s.honor_xp ?? 0, "num"),
         cell(sum(r, "ShotsFired"), "num"), cell(sum(r, "ShotsHit"), "num"),
         cell(sum(r, "Kills"), "num"), cell(sum(r, "Headshots"), "num"),
-        cell(r.iObjectivesCompleted ?? 0, "num"), cell(m.iRoundsWon ?? 0, "num"),
+        cell(s.objectives ?? r.iObjectivesCompleted ?? 0, "num"), cell(s.rounds_won ?? m.iRoundsWon ?? 0, "num"),
         cell(p.observed.distance_uu, "num"), cell(p.observed.sprints, "num"));
       tb.append(tr);
     }
